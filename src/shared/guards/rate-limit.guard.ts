@@ -1,6 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext, HttpException, HttpStatus, Inject } from '@nestjs/common';
 import Redis from 'ioredis'; // Redis client for interacting with Redis
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from '../services/logger.service';
 
 // For production, these values should be configurable via environment variables
 const RATE_LIMIT_WINDOW_SECONDS = 60; // Time window for rate limiting (e.g., 1 minute)
@@ -9,7 +9,7 @@ const MAX_REQUESTS_PER_WINDOW = 100; // Maximum number of requests allowed per I
 @Injectable()
 export class RateLimitGuard implements CanActivate {
   constructor(
-    private readonly logger: CustomLogger,
+    private readonly logger: LoggerService,
     @Inject('REDIS_CLIENT') private readonly redisClient: Redis, // Inject Redis client instance
   ) {
     this.logger.setContext('RateLimitGuard'); // Set context for the logger

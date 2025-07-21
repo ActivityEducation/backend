@@ -3,8 +3,8 @@ import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import * as bodyParser from 'body-parser';
 import { setupSwagger } from './swagger.setup';
-import { CustomLogger } from './core/custom-logger.service';
 import { HttpExceptionFilter } from './shared/filters/http-exception.filter';
+import { LoggerService } from './shared/services/logger.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -24,11 +24,11 @@ async function bootstrap() {
   app.use(bodyParser.json()); // For general JSON
   app.use(bodyParser.urlencoded({ extended: true })); // For form data
 
-  const customLogger = await app.resolve(CustomLogger);
-  customLogger.setContext('Bootstrap');
+  const loggerService = await app.resolve(LoggerService);
+  loggerService.setContext('Bootstrap');
 
   // Apply global exception filter for consistent error responses
-  app.useGlobalFilters(new HttpExceptionFilter(customLogger));
+  app.useGlobalFilters(new HttpExceptionFilter(loggerService));
 
   // Enable global validation pipe for DTOs
   app.useGlobalPipes(new ValidationPipe({
@@ -49,11 +49,11 @@ async function bootstrap() {
 
   // Set a global prefix for API routes, excluding well-known and nodeinfo
   app.setGlobalPrefix('api', {
-    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)'],
+    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health'],
   });
   setupSwagger(app);
 
   await app.listen(80);
-  customLogger.log(`Application is running on: ${await app.getUrl()}`, 'Bootstrap');
+  loggerService.log(`Application is running on: ${await app.getUrl()}`, 'Bootstrap');
 }
 bootstrap();

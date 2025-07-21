@@ -11,7 +11,9 @@ import { InvalidDigestError } from './exceptions/invalid-digest.exception';
 import { KeyManagementService } from './services/key-management.service';
 import { CoreModule } from '../core/core.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
+import { ActorEntity } from '../features/activitypub/entities/actor.entity';
+import { provideLoggerOptions } from './services/logger-config.provider';
+import { LoggerService } from './services/logger.service';
 
 /**
  * CommonModule
@@ -34,6 +36,8 @@ import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
     TypeOrmModule.forFeature([ActorEntity]),
   ], // Use forwardRef if this module is imported in a circular dependency scenario
   providers: [
+    provideLoggerOptions(),
+    LoggerService,
     // Guards
     JwtAuthGuard,
     HttpSignatureVerificationGuard,
@@ -55,6 +59,7 @@ import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
     InvalidDigestError, // If this exception class needs DI for creation
   ],
   exports: [
+    LoggerService,
     // Export all providers that other modules might need to inject
     JwtAuthGuard,
     HttpSignatureVerificationGuard,

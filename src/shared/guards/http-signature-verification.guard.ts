@@ -10,7 +10,7 @@ import { Request } from 'express';
 import { KeyManagementService } from '../services/key-management.service';
 import * as HttpSignature from '@peertube/http-signature'; // Changed: Import as namespace for @peertube/http-signature
 import * as util from 'util'; // Re-added util for deep logging
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from '../services/logger.service';
 
 /**
  * Custom exception for HTTP Signature verification failures.
@@ -47,7 +47,7 @@ export class HttpSignatureVerificationGuard implements CanActivate {
 
   constructor(
     private keyManagementService: KeyManagementService,
-    private readonly logger: CustomLogger,
+    private readonly logger: LoggerService,
   ) {
     this.logger.setContext(HttpSignatureVerificationGuard.name);
   }

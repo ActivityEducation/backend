@@ -14,6 +14,9 @@ import { OutboxProcessor } from './services/outbox.processor';
 import { CoreModule } from '../../core/core.module'; // Import CoreModule for AppService, RemoteObjectService, HttpModule
 import { CommonModule } from '../../shared/common.module'; // Import CommonModule for shared services like KeyManagementService
 import { ModerationModule } from '../moderation/moderation.module';
+import { DiscoveryModule } from '@nestjs/core';
+import { ActivityHandlerModule } from './activity-handler/handler.module';
+import { ActivityPubController } from './controllers/activitypub.controller';
 
 /**
  * ActivityPubModule
@@ -39,6 +42,7 @@ import { ModerationModule } from '../moderation/moderation.module';
  */
 @Module({
   imports: [
+    ActivityHandlerModule,
     // Register ActivityPub-related entities with TypeORM
     TypeOrmModule.forFeature([
       ActorEntity,
@@ -59,6 +63,9 @@ import { ModerationModule } from '../moderation/moderation.module';
     // Provide the processors responsible for handling queue jobs
     InboxProcessor,
     OutboxProcessor,
+  ],
+  controllers: [
+    ActivityPubController
   ],
   exports: [
     // Export TypeOrmModule.forFeature to allow other modules to inject entity repositories

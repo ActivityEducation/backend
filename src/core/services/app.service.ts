@@ -23,14 +23,14 @@ import { RemoteObjectService } from './remote-object.service';
 import * as bcrypt from 'bcrypt';
 import { Redis } from 'ioredis'; // Import Redis type
 import * as sshpk from 'sshpk'; // Import sshpk for key parsing and validation
-import { ActorEntity } from '../features/activitypub/entities/actor.entity';
-import { ActivityEntity } from '../features/activitypub/entities/activity.entity';
-import { FollowEntity } from '../features/activitypub/entities/follow.entity';
-import { ContentObjectEntity } from '../features/activitypub/entities/content-object.entity';
-import { LikeEntity } from '../features/activitypub/entities/like.entity';
-import { BlockEntity } from '../features/activitypub/entities/block.entity';
-import { CustomLogger } from './custom-logger.service';
-import { InvalidSignatureException } from '../shared/exceptions/invalid-signature.exception';
+import { ActorEntity } from '../../features/activitypub/entities/actor.entity';
+import { ActivityEntity } from '../../features/activitypub/entities/activity.entity';
+import { FollowEntity } from '../../features/activitypub/entities/follow.entity';
+import { ContentObjectEntity } from '../../features/activitypub/entities/content-object.entity';
+import { LikeEntity } from '../../features/activitypub/entities/like.entity';
+import { InvalidSignatureException } from '../../shared/exceptions/invalid-signature.exception';
+import { LoggerService } from '../../shared/services/logger.service';
+import { ActivityPubActivity } from 'src/features/activitypub/interfaces/activitypub.interface';
 
 @Injectable()
 export class AppService implements OnApplicationBootstrap {
@@ -47,12 +47,10 @@ export class AppService implements OnApplicationBootstrap {
     private readonly contentObjectRepository: Repository<ContentObjectEntity>,
     @InjectRepository(LikeEntity)
     private readonly likeRepository: Repository<LikeEntity>,
-    @InjectRepository(BlockEntity)
-    private readonly blockRepository: Repository<BlockEntity>,
     private readonly configService: ConfigService,
     @InjectQueue('inbox') private readonly inboxQueue: Queue,
     @InjectQueue('outbox') private readonly outboxQueue: Queue,
-    private readonly logger: CustomLogger,
+    private readonly logger: LoggerService,
     private readonly remoteObjectService: RemoteObjectService,
     @Inject('REDIS_CLIENT') private readonly redisClient: Redis, // Changed to use the custom token 'REDIS_CLIENT'
   ) {
@@ -211,6 +209,7 @@ export class AppService implements OnApplicationBootstrap {
       }', Activity ID: '${activity.id || 'N/A'}'.`,
     );
 
+    // Check if the actor with given username exists locally.
     const localActor = await this.getActorProfile(username); // Using getActorProfile
     if (!localActor) {
       this.logger.warn(
@@ -239,18 +238,16 @@ export class AppService implements OnApplicationBootstrap {
       this.logger.warn(
         `Incoming activity has no 'id' property. Cannot check for duplicates. Activity: ${JSON.stringify(activity)}`,
       );
-      // Production Grade Improvement: Generate a deterministic ID or reject.
     }
 
     const newActivity = this.activityRepository.create({
       activityPubId: activity.id,
       type: activity.type,
-      actorActivityPubId: activity.actor,
-      objectActivityPubId: activity.object?.id || activity.object, // Handle both object URI and embedded object
-      inReplyToActivityPubId: activity.inReplyTo,
+      actorActivityPubId: activity?.['as:actor'].id,
+      objectActivityPubId: activity?.['as:object'].id, // Handle both object URI and embedded object
+      inReplyToActivityPubId: activity.inReplyTo, // TODO: Fix this as this is likely not the correct property after compact of JsonLD.
       data: activity, // Store the full ActivityPub JSON-LD payload
-      // Removed rawBody: rawBody.toString('utf8') as ActivityEntity does not have a rawBody column
-      actor: localActor, // Link to the local actor entity
+      actor: localActor
     });
 
     await this.activityRepository.save(newActivity);
@@ -385,15 +382,6 @@ export class AppService implements OnApplicationBootstrap {
     // The activity's 'to', 'cc', 'bto', 'bcc', 'audience' fields will determine
     // which local actors (if any) are ultimately recipients.
     // For now, we'll store it and let the processor figure out routing.
-
-    // Access rawBody from the request object, which is essential for Digest verification
-    const rawBody = req.rawBody;
-    if (!rawBody) {
-      this.logger.error(
-        'Raw body not found for relay post. Cannot verify Digest.',
-      );
-      throw new BadRequestException('Raw request body is missing.');
-    }
 
     // Check for existing activity to prevent duplicates
     if (activity.id) {
@@ -648,7 +636,7 @@ export class AppService implements OnApplicationBootstrap {
 
     const [activities, totalItems] = await this.activityRepository.findAndCount(
       {
-        where: { actor: { id: actor.id } }, // Filter by local actor using the relationship
+        where: { activityPubId: actor.activityPubId }, // Filter by local actor using the relationship
         order: { createdAt: 'DESC' }, // Order by creation date descending
         skip: (page - 1) * perPage,
         take: perPage,
@@ -841,6 +829,44 @@ export class AppService implements OnApplicationBootstrap {
   async getContentObject(objectId: string): Promise<any | null> {
     this.logger.debug(`Fetching content object: '${objectId}' via AppService.`);
     return this.remoteObjectService.fetchRemoteObject(objectId);
+  }
+  
+  public getInstanceBaseUrl() {
+    return this.instanceBaseUrl;
+  }
+
+  /**
+   * Retrieves a activity object by its ActivityPub ID.
+   * @param activityPubId The ActivityPub ID (URI) of the activity object.
+   * @returns The activity object's JSON-LD payload, or null if not found.
+   */
+  async getLocalContentObject(activityPubId: string): Promise<any | null> {
+    this.logger.debug(`Fetching local content object: '${activityPubId}' via AppService.`);
+    // You should fetch from your local database first, then potentially remote if not found
+    const localActivity = await this.contentObjectRepository.findOne({ where: { activityPubId: activityPubId } }); // Corrected: Query by activityPubId column
+    if (localActivity) {
+      return localActivity.data; // Return the stored JSON-LD data
+    }
+    // If not found locally, you might attempt to fetch remotely via remoteObjectService
+    // return this.remoteObjectService.fetchRemoteObject(activityPubId);
+    return null; // For now, just return null if not local
+  }
+
+  /**
+   * Retrieves a activity object by its ActivityPub ID.
+   * @param activityPubId The ActivityPub ID (URI) of the activity object.
+   * @returns The activity object's JSON-LD payload, or null if not found.
+   */
+  async getActivityObject(activityPubId: string): Promise<any | null> {
+    this.logger.debug(`Fetching activity object: '${activityPubId}' via AppService.`);
+    // You should fetch from your local database first, then potentially remote if not found
+    const localActivity = await this.activityRepository.findOne({ where: { activityPubId: activityPubId } }); // Corrected: Query by activityPubId column
+    if (localActivity) {
+      return localActivity.data; // Return the stored JSON-LD data
+    }
+    // If not found locally, you might attempt to fetch remotely via remoteObjectService
+    // return this.remoteObjectService.fetchRemoteObject(activityPubId);
+    return null; // For now, just return null if not local
   }
 
   /**
@@ -1235,37 +1261,6 @@ export class AppService implements OnApplicationBootstrap {
         },
       ],
     };
-  }
-
-  /**
-   * Basic health check endpoint.
-   * Provides a simple mechanism to check if the application and its dependencies are operational.
-   * @returns Health status object.
-   * @throws HttpException if the service is unavailable (e.g., database connection fails).
-   */
-  async getHealthStatus() {
-    this.logger.debug('Performing health check.');
-    try {
-      // In a real application, you would perform more comprehensive checks:
-      // - Database connection: `await this.actorRepository.query('SELECT 1');`
-      // - Redis connection: `await this.inboxQueue.client.ping();`
-      // - External API dependencies, etc.
-      await this.actorRepository.count(); // Simple database connectivity check by counting actors
-      await this.redisClient.ping(); // Check Redis connection
-      this.logger.log('Health check passed: Database and Redis connected.');
-      return {
-        status: 'ok',
-        uptime: process.uptime(), // Application uptime in seconds
-        timestamp: new Date().toISOString(), // Current timestamp
-        message: 'ActivityPub server is operational.',
-      };
-    } catch (error) {
-      this.logger.error(`Health check failed: ${error.message}.`, error.stack);
-      throw new HttpException(
-        'Service Unavailable',
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
-    }
   }
 
   /**

@@ -3,15 +3,15 @@ import { JwtService } from '@nestjs/jwt'; // For creating and signing JWTs
 import { InjectRepository } from '@nestjs/typeorm'; // For injecting TypeORM repositories
 import { Repository } from 'typeorm'; // TypeORM Repository type
 import * as bcrypt from 'bcrypt'; // Import bcrypt for password hashing and comparison
-import { AppService } from '../../core/app.service';
+import { AppService } from '../../core/services/app.service';
 import { ActorEntity } from '../activitypub/entities/actor.entity';
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from 'src/shared/services/logger.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private jwtService: JwtService, // JWT service for token operations
-    private readonly logger: CustomLogger, // Custom logger
+    private readonly logger: LoggerService, // Custom logger
     @InjectRepository(ActorEntity)
     private readonly actorRepository: Repository<ActorEntity>, // Repository for ActorEntity
     private readonly appService: AppService, // AppService for ActivityPub actor creation

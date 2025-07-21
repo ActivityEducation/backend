@@ -1,5 +1,13 @@
-import { createParamDecorator, ExecutionContext, BadRequestException } from '@nestjs/common';
+import {
+  createParamDecorator,
+  ExecutionContext,
+  BadRequestException,
+} from '@nestjs/common';
 import { Request } from 'express';
+import * as jsonld from 'jsonld';
+
+// Required for custom loading of contexts
+import '../contexts/custom-document.loader';
 
 /**
  * Custom parameter decorator to extract and parse the ActivityPub JSON-LD body
@@ -16,32 +24,81 @@ import { Request } from 'express';
  * }
  */
 export const Activity = createParamDecorator(
-  (data: unknown, ctx: ExecutionContext) => {
+  async (data: unknown, ctx: ExecutionContext) => {
     const request = ctx.switchToHttp().getRequest<Request>();
+    let _body: jsonld;
+    let parsedBody: any; // Use 'any' to be flexible with parsed JSON structure
 
-    // Attempt to get the raw body from `req.rawBody` first, which is explicitly enabled by NestFactory's rawBody: true.
-    // If `req.rawBody` is not available (e.g., due to middleware interaction),
-    // try to get it from `req.body`, which `bodyParser.raw()` typically populates.
-    let rawBodyBuffer: Buffer | undefined;
-
+    // Prioritize rawBody if available, as it's explicitly configured for ActivityPub JSON-LD
     if ((request as any).rawBody instanceof Buffer) {
-      rawBodyBuffer = (request as any).rawBody;
+      try {
+        parsedBody = JSON.parse((request as any).rawBody.toString('utf8'));
+      } catch (error) {
+        throw new BadRequestException(`Invalid JSON payload from rawBody: ${error.message}`);
+      }
     } else if (request.body instanceof Buffer) {
-      rawBodyBuffer = request.body;
-    }
-
-    if (!rawBodyBuffer) {
-      // This indicates that neither rawBody nor body contained the expected Buffer.
-      throw new BadRequestException('Raw request body not found. Ensure rawBody: true in NestFactory.create() and bodyParser.raw() middleware are configured correctly.');
+      // Fallback to request.body if it's a Buffer (e.g., if rawBody wasn't explicitly set by NestFactory)
+      try {
+        parsedBody = JSON.parse(request.body.toString('utf8'));
+      } catch (error) {
+        throw new BadRequestException(`Invalid JSON payload from body (Buffer): ${error.message}`);
+      }
+    } else if (request.body && typeof request.body === 'object' && request.body !== null) {
+      // If request.body is already a parsed object (e.g., by another bodyParser.json() middleware)
+      // and it's not a Buffer, use it directly.
+      // This check ensures we don't try to parse an already parsed object.
+      parsedBody = request.body;
+    } else {
+      // If none of the above, the raw body was not found or not in expected format
+      throw new BadRequestException(
+        'Raw request body not found or not in expected format. Ensure rawBody: true in NestFactory.create() and bodyParser.raw() middleware are configured correctly for ActivityPub content types.',
+      );
     }
 
     try {
-      // Parse the raw buffer into a JSON object
-      const parsedActivity = JSON.parse(rawBodyBuffer.toString('utf8'));
-      return parsedActivity;
+      // Define the target context for compaction.
+      // This context tells jsonld.js how to interpret and compact the terms.
+      // It should include both ActivityStreams and your EducationPub context.
+      const targetContext = {
+        '@context': [
+          'https://www.w3.org/ns/activitystreams',
+          'https://schema.org/',
+          'https://w3id.org/security/v1',
+          'https://w3id.org/identity/v1',
+          'https://social.bleauweb.org/ns/education-pub',
+          // Add other contexts if your application uses them
+        ],
+      };
+
+      console.log('_body before compact:', JSON.stringify(parsedBody, null, 2));
+
+      // Use jsonld.compact to process the incoming JSON-LD.
+      // This will validate the context, expand terms, and then compact them
+      // back into a more convenient form based on the targetContext.
+      // For example, "edu:fieldName" might become "eduFieldName" if defined in your edu-ns context.
+      const compactedActivity = await jsonld.compact(
+        parsedBody,
+        targetContext,
+      );
+
+      // Basic validation: ensure the compacted object still has a type and ID
+      if (!compactedActivity.type || !compactedActivity.id) {
+        throw new BadRequestException(
+          'Compacted ActivityPub object is missing required "type" or "id" properties after JSON-LD processing.',
+        );
+      }
+
+      return compactedActivity;
     } catch (error) {
-      // If parsing fails, it indicates a malformed JSON payload
-      throw new BadRequestException(`Invalid ActivityPub JSON-LD payload: ${error.message}`);
+      // jsonld.js can throw various errors (e.g., if context is invalid, or parsing issues)
+      // Catch specific jsonld errors or re-throw as BadRequestException
+      if (error instanceof SyntaxError) {
+        throw new BadRequestException(`Invalid JSON payload: ${error.message}`);
+      }
+      // You might want more specific error handling for jsonld.js errors
+      throw new BadRequestException(
+        `Failed to process ActivityPub JSON-LD payload: ${error.message}`,
+      );
     }
   },
 );

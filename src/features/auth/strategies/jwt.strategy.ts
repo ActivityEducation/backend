@@ -4,14 +4,14 @@ import { ExtractJwt, Strategy } from 'passport-jwt'; // JWT extraction and Strat
 import { ConfigService } from '@nestjs/config'; // For accessing environment variables
 import { Repository } from 'typeorm'; // TypeORM Repository type
 import { InjectRepository } from '@nestjs/typeorm'; // Decorator for injecting TypeORM repositories
-import { CustomLogger } from '../../../core/custom-logger.service';
 import { ActorEntity } from '../../../features/activitypub/entities/actor.entity';
+import { LoggerService } from 'src/shared/services/logger.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') { // 'jwt' is the strategy name
   constructor(
     configService: ConfigService,
-    private readonly logger: CustomLogger,
+    private readonly logger: LoggerService,
     @InjectRepository(ActorEntity) // Inject the ActorEntity repository
     private readonly actorRepository: Repository<ActorEntity>,
   ) {

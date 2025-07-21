@@ -1,10 +1,10 @@
 import { Injectable, ExecutionContext } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport'; // Base AuthGuard from @nestjs/passport
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from '../services/logger.service';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') { // Extends Passport's JWT strategy
-  constructor(private readonly logger: CustomLogger) {
+  constructor(private readonly logger: LoggerService) {
     super(); // Call the constructor of the base AuthGuard
     this.logger.setContext('JwtAuthGuard'); // Set context for the logger
   }

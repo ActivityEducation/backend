@@ -9,7 +9,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './strategies/jwt.strategy'; // Path updated to be within auth feature
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActorEntity } from '../activitypub/entities/actor.entity'; // Path updated to activitypub feature
-import { CommonModule } from '../../shared/common.module'; // Import CommonModule for shared services like CustomLogger
+import { CommonModule } from '../../shared/common.module'; // Import CommonModule for shared services like
 import { CoreModule } from 'src/core/core.module';
 import { ModerationModule } from '../moderation/moderation.module';
 
@@ -25,7 +25,6 @@ import { ModerationModule } from '../moderation/moderation.module';
  * - JwtModule.registerAsync: To configure JWT token generation and verification
  * using the JWT secret from ConfigService.
  * - ConfigModule: To ensure ConfigService is available for JwtModule configuration.
- * - CommonModule: To access shared components like CustomLogger and potentially
  * other shared guards or services needed for authentication.
  *
  * It provides:
@@ -38,7 +37,6 @@ import { ModerationModule } from '../moderation/moderation.module';
  * Note: Entities like ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity,
  * and BlockEntity have been moved to the ActivityPubModule as they are specific
  * to the ActivityPub domain, not core authentication.
- * CustomLogger is now assumed to be provided via CommonModule.
  */
 @Module({
   imports: [
@@ -59,12 +57,11 @@ import { ModerationModule } from '../moderation/moderation.module';
       }),
     }),
     ConfigModule, // Import ConfigModule to ensure ConfigService is available
-    CommonModule, // Import CommonModule for shared services like CustomLogger
+    CommonModule,
   ],
   providers: [
     AuthService, // Authentication service
     JwtStrategy, // JWT Passport strategy
-    // CustomLogger is now assumed to be provided via CommonModule, so it's removed from here.
   ],
   controllers: [AuthController], // Register authentication controller
   exports: [AuthService], // Export AuthService if other modules need to use its authentication logic

@@ -3,11 +3,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
-import { AppService } from './app.service';
+import { AppService } from './services/app.service';
 import { RedisModule } from './redis.module';
-import { RemoteObjectService } from './remote-object.service';
+import { RemoteObjectService } from './services/remote-object.service';
 import { CommonModule } from '../shared/common.module'; // Import the new CommonModule
-import { CustomLogger } from './custom-logger.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
 import { ActivityEntity } from 'src/features/activitypub/entities/activity.entity';
@@ -16,6 +15,9 @@ import { ContentObjectEntity } from 'src/features/activitypub/entities/content-o
 import { LikeEntity } from 'src/features/activitypub/entities/like.entity';
 import { BlockEntity } from 'src/features/activitypub/entities/block.entity';
 import { BullModule } from '@nestjs/bullmq';
+import { JsonLDNamespaceController } from './controllers/namespace.controller';
+import { NodeInfoController } from './controllers/nodeinfo.controller';
+import { WellKnownController } from './controllers/well-known.controller';
 
 /**
  * CoreModule
@@ -33,7 +35,6 @@ import { BullModule } from '@nestjs/bullmq';
  * It provides and exports:
  * - AppService: The main application service.
  * - RemoteObjectService: For handling remote object interactions.
- * - CustomLogger: (If not globally provided, it should be here or in CommonModule)
  * - HttpModule: Exported for other modules to use axios.
  * - RedisModule: Exported for other modules to use Redis.
  *
@@ -59,21 +60,20 @@ import { BullModule } from '@nestjs/bullmq';
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
   ],
+  controllers: [
+    JsonLDNamespaceController,
+    NodeInfoController,
+    WellKnownController,
+  ],
   providers: [
     AppService,          // Core application logic
     RemoteObjectService, // Service for fetching remote ActivityPub objects
-    // CustomLogger is typically provided globally or within a specific logging module.
-    // If it's not global, it could be here or in CommonModule if widely used.
-    // For this refactor, assuming it's either global or handled by CommonModule.
-    CustomLogger,
   ],
   exports: [
     HttpModule,          // Allow other modules to use HttpModule
     RedisModule,         // Allow other modules to use RedisModule
     AppService,          // Export AppService for other modules that need it
     RemoteObjectService, // Export RemoteObjectService for other modules
-    // CustomLogger (if provided here)
-    CustomLogger,
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
   ],

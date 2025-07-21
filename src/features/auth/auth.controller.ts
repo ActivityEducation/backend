@@ -2,54 +2,17 @@ import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { AuthService } from './auth.service'; // Authentication service
 import { IsString, IsNotEmpty, MinLength } from 'class-validator'; // For DTO validation decorators
 import { ApiProperty } from '@nestjs/swagger';
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from 'src/shared/services/logger.service';
+import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 
-// Data Transfer Object (DTO) for login requests.
-// Class-validator decorators ensure incoming data meets specified criteria.
-class LoginDto {
-  @IsString({ message: 'Username must be a string.' })
-  @IsNotEmpty({ message: 'Username cannot be empty.' })
-  @ApiProperty()
-  username: string;
 
-  @IsString({ message: 'Password must be a string.' })
-  @IsNotEmpty({ message: 'Password cannot be empty.' })
-  @MinLength(8, { message: 'Password must be at least 8 characters long.' })
-  @ApiProperty()
-  password: string;
-}
-
-// Data Transfer Object (DTO) for user registration requests.
-class RegisterDto {
-  @IsString({ message: 'Username must be a string.' })
-  @IsNotEmpty({ message: 'Username cannot be empty.' })
-  @MinLength(3, { message: 'Username must be at least 3 characters long.' })
-  @ApiProperty()
-  username: string;
-
-  @IsString({ message: 'Name must be a string.' })
-  @IsNotEmpty({ message: 'Name cannot be empty.' })
-  @MinLength(3, { message: 'Name must be at least 3 characters long.' })
-  @ApiProperty()
-  name: string;
-
-  @IsString({ message: 'Summary must be a string.' })
-  @IsNotEmpty({ message: 'Summary cannot be empty.' })
-  @ApiProperty()
-  summary: string;
-
-  @IsString({ message: 'Password must be a string.' })
-  @IsNotEmpty({ message: 'Password cannot be empty.' })
-  @MinLength(8, { message: 'Password must be at least 8 characters long.' })
-  @ApiProperty()
-  password: string;
-}
 
 @Controller('auth') // Base route for authentication related endpoints
 export class AuthController {
   constructor(
     private readonly authService: AuthService, // Inject AuthService
-    private readonly logger: CustomLogger, // Inject custom logger
+    private readonly logger: LoggerService, // Inject custom logger
   ) {
     this.logger.setContext('AuthController'); // Set context for the logger
   }

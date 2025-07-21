@@ -4,8 +4,8 @@ import { Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios'; // For fetching remote public keys
 import { firstValueFrom } from 'rxjs'; // To convert AxiosObservable to Promise
 import { InjectRepository } from '@nestjs/typeorm';
-import { CustomLogger } from '../../core/custom-logger.service';
 import { ActorEntity } from '../../features/activitypub/entities/actor.entity';
+import { LoggerService } from './logger.service';
 
 /**
  * KeyManagementService handles the generation, storage, and retrieval of
@@ -20,7 +20,7 @@ export class KeyManagementService {
     @InjectRepository(ActorEntity)
     private readonly actorRepository: Repository<ActorEntity>,
     private readonly httpService: HttpService,
-    private readonly logger: CustomLogger,
+    private readonly logger: LoggerService,
   ) {
     this.logger.setContext('KeyManagementService');
   }

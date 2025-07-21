@@ -2,15 +2,15 @@ import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm'; // For injecting TypeORM repositories
 import { Repository, IsNull } from 'typeorm'; // TypeORM Repository type and IsNull for soft delete checks
 import { Redis } from 'ioredis'; // Import Redis type
-import { ContentObjectEntity } from '../features/activitypub/entities/content-object.entity';
-import { CustomLogger } from './custom-logger.service';
+import { LoggerService } from '../../shared/services/logger.service';
+import { ContentObjectEntity } from '../../features/activitypub/entities/content-object.entity';
 
 @Injectable()
 export class RemoteObjectService {
   constructor(
     @InjectRepository(ContentObjectEntity)
     private readonly contentObjectRepository: Repository<ContentObjectEntity>, // Repository for ContentObjectEntity
-    private readonly logger: CustomLogger, // Custom logger
+    private readonly logger: LoggerService, // Custom logger
     @Inject('REDIS_CLIENT') private readonly redisClient: Redis, // Inject Redis client
   ) {
     this.logger.setContext('RemoteObjectService'); // Set context for the logger

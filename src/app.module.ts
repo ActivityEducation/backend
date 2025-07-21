@@ -4,7 +4,6 @@ import { Module, Logger } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
-import { AppController } from './app.controller';
 import Redis from 'ioredis';
 import * as Joi from 'joi';
 
@@ -22,6 +21,9 @@ import { FollowEntity } from './features/activitypub/entities/follow.entity';
 import { ContentObjectEntity } from './features/activitypub/entities/content-object.entity';
 import { LikeEntity } from './features/activitypub/entities/like.entity';
 import { BlockEntity } from './features/activitypub/entities/block.entity';
+import { EducationPubModule } from './features/educationpub/educationpub.module';
+import { Flashcard } from './features/educationpub/views/flashcard.view';
+import { HealthModule } from './features/health/health.module';
 
 /**
  * AppModule
@@ -88,6 +90,8 @@ import { BlockEntity } from './features/activitypub/entities/block.entity';
     AuthModule,
     ModerationModule,
     ActivityPubModule, // Include the new ActivityPub feature module
+    EducationPubModule,
+    HealthModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.
@@ -103,7 +107,7 @@ import { BlockEntity } from './features/activitypub/entities/block.entity';
         database: configService.get<string>('DB_DATABASE'),
         // Entities are now registered within their respective feature modules (e.g., ActivityPubModule)
         // So, we remove the direct listing here.
-        entities: [ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity],
+        entities: [ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity, Flashcard],
         dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.
                            // In production, use database migrations (e.g., TypeORM CLI commands)
@@ -127,9 +131,7 @@ import { BlockEntity } from './features/activitypub/entities/block.entity';
     // Remove TypeOrmModule.forFeature here as entities are now registered within feature modules.
     // TypeOrmModule.forFeature([ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity]),
   ],
-  controllers: [AppController], // Register controllers
   providers: [
-    Logger, // NestJS's built-in Logger (can be used alongside CustomLogger)
     // Provide a Redis client instance for direct Redis operations (e.g., rate limiting).
     // This uses 'ioredis' for a robust Redis client.
     {

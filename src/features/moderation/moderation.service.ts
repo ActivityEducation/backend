@@ -2,14 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm'; // For injecting TypeORM repositories
 import { Repository } from 'typeorm'; // TypeORM Repository type
 import { FlaggedObjectEntity } from './entities/flagged-object.entity'; // Import FlaggedObjectEntity
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from 'src/shared/services/logger.service';
 
 @Injectable()
 export class ModerationService {
   constructor(
     @InjectRepository(FlaggedObjectEntity)
     private readonly flaggedObjectRepository: Repository<FlaggedObjectEntity>, // Repository for FlaggedObjectEntity
-    private readonly logger: CustomLogger, // Custom logger
+    private readonly logger: LoggerService, // Custom logger
   ) {
     this.logger.setContext('ModerationService'); // Set context for the logger
   }

@@ -1,69 +1,33 @@
 import {
   Controller,
+  DefaultValuePipe,
   Get,
-  Post,
+  Header,
+  HttpCode,
+  HttpStatus,
+  NotFoundException,
   Param,
+  ParseIntPipe,
+  Post,
   Query,
   Req,
-  Header,
-  HttpStatus,
-  DefaultValuePipe,
-  ParseIntPipe,
   UseGuards,
-  HttpCode,
-  BadRequestException,
-  NotFoundException,
 } from '@nestjs/common';
-import { AppService } from './core/app.service';
-import { Request } from 'express';
-import { CustomLogger } from './core/custom-logger.service';
-import { HttpSignatureVerificationGuard } from './shared/guards/http-signature-verification.guard';
-import { RateLimitGuard } from './shared/guards/rate-limit.guard';
-import { JwtAuthGuard } from './shared/guards/jwt-auth.guard';
-import { Activity } from './shared/decorators/activity.decorator';
-import { User } from './shared/decorators/user.decorator';
+import { AppService } from 'src/core/services/app.service';
+import { Activity } from 'src/shared/decorators/activity.decorator';
+import { User } from 'src/shared/decorators/user.decorator';
+import { HttpSignatureVerificationGuard } from 'src/shared/guards/http-signature-verification.guard';
+import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
+import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
+import { LoggerService } from 'src/shared/services/logger.service';
 
-@Controller() // Main controller for handling various API routes
-export class AppController {
+@Controller()
+export class ActivityPubController {
   constructor(
     private readonly appService: AppService,
-    private readonly logger: CustomLogger, // Inject custom logger
+    private readonly logger: LoggerService, // Inject custom logger
   ) {
-    this.logger.setContext('AppController'); // Set context for the logger for better traceability
-  }
-
-  // Health check endpoint: GET /api/health
-  // Provides a simple way to check if the application is running and responsive.
-  @Get('health')
-  @HttpCode(HttpStatus.OK) // Always return 200 OK if healthy
-  async health() {
-    this.logger.debug('Health check requested.');
-    return this.appService.getHealthStatus();
-  }
-
-  // WebFinger endpoint: GET /.well-known/webfinger
-  // Used for discovering actors (users) on this instance.
-  @Get('.well-known/webfinger')
-  @Header('Content-Type', 'application/jrd+json') // JRD (JSON Resource Descriptor) content type
-  async webfinger(@Query('resource') resource: string) {
-    this.logger.debug(`WebFinger request for resource: '${resource}'.`);
-    return this.appService.getWebfinger(resource); // Calls the new getWebfinger method in AppService
-  }
-
-  // NodeInfo 2.0 endpoint: GET /nodeinfo/2.0
-  @Get('nodeinfo/2.0')
-  @Header('Content-Type', 'application/json') // NodeInfo is typically JSON
-  async nodeinfo2() {
-    this.logger.debug('NodeInfo 2.0 requested.');
-    return this.appService.getNodeInfo2();
-  }
-
-  // NodeInfo 1.0 well-known endpoint: GET /.well-known/nodeinfo
-  @Get('.well-known/nodeinfo')
-  @Header('Content-Type', 'application/json') // NodeInfo is typically JSON
-  async nodeinfo() {
-    this.logger.debug('NodeInfo 1.0 requested.');
-    return this.appService.getNodeInfo1(); // Calls getNodeInfo1
+    this.logger.setContext('ActivityPubController');
   }
 
   // Actor profile endpoint: GET /api/actors/:username
@@ -110,7 +74,7 @@ export class AppController {
   @Post('inbox') // Or a more specific relay path like /relay/inbox
   @HttpCode(HttpStatus.ACCEPTED) // Return 202 Accepted for asynchronous processing
   @Header('Content-Type', 'application/ld+json') // Specify JSON-LD content type
-  @UseGuards(HttpSignatureVerificationGuard, RateLimitGuard) // Apply rate limiting to protect against abuse
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
   async relay(@Activity() activity: any, @Req() req: Request) {
     this.logger.log(
       `Incoming relay post. Activity Type: '${activity.type || 'N/A'}'.`,
@@ -122,6 +86,7 @@ export class AppController {
   // Followers collection endpoint: GET /api/actors/:username/followers
   @Get('actors/:username/followers')
   @Header('Content-Type', 'application/activity+json')
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
   async followersCollection(
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -136,6 +101,7 @@ export class AppController {
   // Following collection endpoint: GET /api/actors/:username/following
   @Get('actors/:username/following')
   @Header('Content-Type', 'application/activity+json')
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
   async followingCollection(
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -150,7 +116,7 @@ export class AppController {
   // Outbox collection endpoint: GET /api/actors/:username/outbox
   @Get('actors/:username/outbox')
   @Header('Content-Type', 'application/activity+json')
-  @UseGuards(JwtAuthGuard) // Protect with JWT for full access, or implement public/private logic in service
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
   async outboxCollection(
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -182,6 +148,7 @@ export class AppController {
   // Liked collection endpoint: GET /api/actors/:username/liked
   @Get('actors/:username/liked')
   @Header('Content-Type', 'application/activity+json')
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
   async likedCollection(
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -194,12 +161,42 @@ export class AppController {
   }
 
   // Content object endpoint: GET /api/objects/:id(*)
-  @Get('objects/:id/*path') // Catch-all for ActivityPub object IDs
+  @Get('activities/:id') // Captures the unique ID part of the ActivityPub URI
+  @Header('Content-Type', 'application/activity+json') // Standard content type for ActivityPub objects
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
+  async getActivity(@Param('id') id: string) {
+    this.logger.log(`Fetching activity with ID: '${id}'.`);
+    // Decode the ID in case it contains URI-encoded characters (though UUIDs usually don't)
+    const decodedId = decodeURIComponent(id);
+
+    // Construct the full ActivityPub ID URI to query the database
+    // This assumes your API routes are structured such that /api/activities/:id
+    // corresponds to a full ActivityPub ID like https://your-domain.com/activities/:id
+    const fullActivityPubId = `${this.appService.getInstanceBaseUrl()}/activities/${decodedId}`;
+
+    // Delegate to AppService to find the activity object in the database
+    const activityObject =
+      await this.appService.getActivityObject(fullActivityPubId);
+
+    if (!activityObject) {
+      this.logger.warn(`Activity with ID '${fullActivityPubId}' not found.`);
+      throw new NotFoundException(
+        `Activity with ID '${fullActivityPubId}' not found.`,
+      );
+    }
+    // Return the 'data' property which holds the full JSON-LD payload
+    return activityObject;
+  }
+
+  // Content object endpoint: GET /api/objects/:id(*)
+  @Get('objects/:id') // Catch-all for ActivityPub object IDs
   @Header('Content-Type', 'application/activity+json')
+  @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
   async getObject(@Param('id') id: string) {
     this.logger.log(`Fetching object with ID: '${id}'.`);
     const decodedId = decodeURIComponent(id);
-    const contentObject = await this.appService.getContentObject(decodedId); // Calls getContentObject
+    const contentObject =
+      await this.appService.getLocalContentObject(decodedId); // Calls getContentObject
     if (!contentObject) {
       throw new NotFoundException(
         `Content object with ID '${decodedId}' not found.`,

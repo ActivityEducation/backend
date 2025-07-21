@@ -1,10 +1,10 @@
 import { ExceptionFilter, Catch, ArgumentsHost, HttpException } from '@nestjs/common';
 import { Request, Response } from 'express'; // Express types for request and response
-import { CustomLogger } from '../../core/custom-logger.service';
+import { LoggerService } from '../services/logger.service';
 
 @Catch(HttpException) // Decorator to catch all HttpExceptions
 export class HttpExceptionFilter implements ExceptionFilter {
-  constructor(private readonly logger: CustomLogger) {
+  constructor(private readonly logger: LoggerService) {
     this.logger.setContext('HttpExceptionFilter'); // Set context for the logger
   }
 

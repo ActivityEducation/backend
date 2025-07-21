@@ -7,6 +7,7 @@ services:
     # The Dockerfile will now handle copying these into the image.
     volumes:
       - ./.env:/app/.env # Keep mounting the .env file
+      - ./logs:/app/logs
     # The app will listen on its internal port 80. Nginx will connect to it
     # internally via the Docker network using 'http://app:80'.
     # If you need to access your app directly for debugging, you can use:
