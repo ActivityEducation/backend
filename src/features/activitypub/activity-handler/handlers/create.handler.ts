@@ -20,6 +20,8 @@ export class CreateHandler implements IActivityHandler {
     }
 
   async handleInbox(activity: any): Promise<void> {
+    this.logger.debug(`Received Create activity: ${JSON.stringify(activity)}`);
+
     const actorActivityPubId = String(activity.actorActivityPubId);
     
     this.logger.log(`Handling 'Create' activity from '${actorActivityPubId}'.`);

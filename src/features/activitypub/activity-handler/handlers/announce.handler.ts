@@ -21,6 +21,8 @@ export class AnnounceHandler implements IActivityHandler {
   }
 
   async handleInbox(activity: any): Promise<void> {
+    this.logger.debug(`Received Announce activity: ${JSON.stringify(activity)}`);
+
     const actorActivityPubId = String(activity.actorActivityPubId);
     const objectActivityPubId = typeof activity.objectActivityPubId === 'string' ? String(activity.objectActivityPubId) : undefined;
     

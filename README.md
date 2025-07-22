@@ -144,7 +144,7 @@ Ensure that the INSTANCE\_BASE\_URL in your .env file (or as an environment vari
 
 4. Request your Let's Encrypt SSL certificate using the certbot service:  
    Replace yourdomain.com and www.yourdomain.com with your actual domain(s), and your\_email@example.com with your contact email.  
-   docker compose run \--rm certbot certonly \--webroot \-w /var/www/certbot \-d yourdomain.com \-d www.yourdomain.com \--email your\_email@example.com \--agree-tos \--no-eff-email
+   docker compose run --rm --entrypoint "certbot" certbot certonly --webroot -w /var/www/certbot -d example.com  --email user@example.com --agree-tos
 
    * **Note:** If the above command fails, you might try using the \--nginx authenticator (e.g., docker compose run \--rm certbot certonly \--nginx ...).  
 5. Restart the nginx service to apply the new HTTPS configuration:  

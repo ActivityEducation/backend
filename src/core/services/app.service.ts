@@ -1203,7 +1203,7 @@ export class AppService implements OnApplicationBootstrap {
         domain: new URL(this.instanceBaseUrl).hostname,
         // Other server metadata like software, version, etc.
         software: {
-          name: 'activitypub-nestjs-minimal',
+          name: 'EducationPub',
           version: '0.1.0', // Your application version
           repository: 'https://github.com/ActivityEducation/backend',
           homepage: 'https://social.bleauweb.org',
@@ -1228,7 +1228,7 @@ export class AppService implements OnApplicationBootstrap {
           // Any other custom metadata
         },
       },
-      protocols: ['activitypub'], // List supported protocols
+      protocols: ['activitypub', 'educationpub'], // List supported protocols
       // Optional: services, usage, etc.
       openRegistrations: false, // Set to true if open for new user registrations
       usage: {

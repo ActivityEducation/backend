@@ -20,6 +20,8 @@ export class LikeHandler implements IActivityHandler {
   }
 
   async handleInbox(activity: any): Promise<void> {
+    this.logger.debug(`Received Like activity: ${JSON.stringify(activity)}`);
+    
     const actorActivityPubId = String(activity.actorActivityPubId);
     const objectActivityPubId =
       typeof activity.objectActivityPubId === 'string'
