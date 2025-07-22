@@ -31,7 +31,7 @@ export class HealthController {
       () => this.db.pingCheck('database'),
       () =>
         this.disk.checkStorage('storage', { path: '/', thresholdPercent: 0.5 }),
-      () => this.memory.checkHeap('memory_heap', 150 * 1024 * 1024),
+      () => this.memory.checkHeap('memory_heap', 2 * 1024 * 1024 * 1024),
       // () => this.redisIndicator.isHealthy('redis'),
     ]);
   }
