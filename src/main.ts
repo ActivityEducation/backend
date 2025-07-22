@@ -49,7 +49,7 @@ async function bootstrap() {
 
   // Set a global prefix for API routes, excluding well-known and nodeinfo
   app.setGlobalPrefix('api', {
-    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health'],
+    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health', ''],
   });
   setupSwagger(app);
 

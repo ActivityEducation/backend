@@ -24,6 +24,7 @@ import { BlockEntity } from './features/activitypub/entities/block.entity';
 import { EducationPubModule } from './features/educationpub/educationpub.module';
 import { Flashcard } from './features/educationpub/views/flashcard.view';
 import { HealthModule } from './features/health/health.module';
+import { FrontendModule } from './features/frontend/frontend.module';
 
 /**
  * AppModule
@@ -92,6 +93,7 @@ import { HealthModule } from './features/health/health.module';
     ActivityPubModule, // Include the new ActivityPub feature module
     EducationPubModule,
     HealthModule,
+    FrontendModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.
