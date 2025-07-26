@@ -45,7 +45,7 @@ export class InboxProcessor extends WorkerHost {
    * @param job The job containing the activity data.
    */
   async process(job: Job<any>) {
-    const { localActorId, activity, activityId } = job.data;
+    const { localActorId, data: activity, activityId } = job.data;
     const jobId = job.id; // This is the normalized activityId from AppService, used for deduplication
 
     this.logger.log(`Processing inbox job '${jobId}' for activity type: '${activity.type}'.`);
