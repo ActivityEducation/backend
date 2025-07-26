@@ -1,107 +1,88 @@
-import { Injectable, UnauthorizedException, ConflictException } from '@nestjs/common'; // Import ConflictException
-import { JwtService } from '@nestjs/jwt'; // For creating and signing JWTs
-import { InjectRepository } from '@nestjs/typeorm'; // For injecting TypeORM repositories
-import { Repository } from 'typeorm'; // TypeORM Repository type
-import * as bcrypt from 'bcrypt'; // Import bcrypt for password hashing and comparison
-import { AppService } from '../../core/services/app.service';
-import { ActorEntity } from '../activitypub/entities/actor.entity';
-import { LoggerService } from 'src/shared/services/logger.service';
+// src/features/auth/auth.service.ts
+// Updated to integrate with ActorService for ActivityPub Actor creation
+
+import { Injectable, ConflictException, UnauthorizedException, Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import * as bcrypt from 'bcrypt';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
+import { ActorService } from '../activitypub/services/actor.service'; // Import ActorService
+import { UserEntity } from './entities/user.entity';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
-    private jwtService: JwtService, // JWT service for token operations
-    private readonly logger: LoggerService, // Custom logger
-    @InjectRepository(ActorEntity)
-    private readonly actorRepository: Repository<ActorEntity>, // Repository for ActorEntity
-    private readonly appService: AppService, // AppService for ActivityPub actor creation
-  ) {
-    this.logger.setContext('AuthService'); // Set context for the logger
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
+    private jwtService: JwtService,
+    private actorService: ActorService, // Inject ActorService
+  ) {}
+
+  async register(registerDto: RegisterDto): Promise<{ message: string, user: UserEntity }> {
+    const { username, password, name, summary } = registerDto;
+    this.logger.log(`Attempting to register new user: ${username}`);
+
+    const existingUser = await this.userRepository.findOne({ where: { username } });
+    if (existingUser) {
+      this.logger.warn(`Registration failed: Username '${username}' already exists.`);
+      throw new ConflictException('Username already exists');
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = this.userRepository.create({
+      username,
+      password: hashedPassword,
+    });
+
+    const savedUser = await this.userRepository.save(newUser);
+    this.logger.log(`User '${username}' registered successfully. User ID: ${savedUser.id}`);
+
+    // Create ActivityPub Actor for the new user
+    try {
+      await this.actorService.createActorForUser(savedUser.id, username, name, summary);
+      this.logger.log(`ActivityPub Actor created for user '${username}'.`);
+    } catch (actorCreationError) {
+      this.logger.error(`Failed to create ActivityPub Actor for user '${username}': ${actorCreationError.message}`, actorCreationError.stack);
+      // Decide how to handle this: rollback user creation or log and allow partial success.
+      // For MVP, we'll log the error and proceed, but this should be hardened.
+      // throw new InternalServerErrorException('User registered but failed to create ActivityPub actor.');
+    }
+
+    return { user: savedUser, message: 'User registered successfully!' };
   }
 
-  /**
-   * Validates user credentials (username and password) and issues a JWT upon successful login.
-   * @param username The username attempting to log in.
-   * @param password The plain text password provided by the user.
-   * @returns An object containing the access token.
-   * @throws UnauthorizedException if credentials are invalid or user is not found.
-   */
-  async login(username: string, password?: string): Promise<{ access_token: string }> {
-    this.logger.log(`Attempting login for user: '${username}'.`);
-    const actor = await this.actorRepository.findOne({ where: { preferredUsername: username } }); // Changed to preferredUsername
+  async login(loginDto: LoginDto): Promise<{ access_token: string }> {
+    const { username, password } = loginDto;
+    this.logger.log(`Attempting to log in user: ${username}`);
 
-    if (!actor) {
+    const user = await this.userRepository.findOne({ where: { username } });
+    if (!user) {
       this.logger.warn(`Login failed: User '${username}' not found.`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Special handling for the default 'testuser' which might not have a password hash.
-    // In a production system, all users should have a password hash.
-    if (actor.preferredUsername !== 'testuser') {
-      if (!password) {
-        this.logger.warn(`Login failed for '${username}': Password not provided.`);
-        throw new UnauthorizedException('Password is required.');
-      }
-      if (!actor.passwordHash) {
-        this.logger.warn(`Login failed for '${username}': No password hash found for this user. Account misconfigured?`);
-        throw new UnauthorizedException('User account not configured for password login.');
-      }
-      // Compare the provided plain text password with the stored hashed password
-      if (!await bcrypt.compare(password, actor.passwordHash)) {
-        this.logger.warn(`Login failed for '${username}': Invalid password.`);
-        throw new UnauthorizedException('Invalid credentials');
-      }
-    } else {
-      // For 'testuser', allow login without a password.
-      this.logger.log(`Allowing login for default 'testuser' without password (development mode).`);
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      this.logger.warn(`Login failed: Invalid password for user '${username}'.`);
+      throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Create a JWT payload. 'sub' (subject) is a standard JWT claim, typically holding the user ID.
-    const payload = { username: actor.preferredUsername, sub: actor.id };
-    const accessToken = this.jwtService.sign(payload); // Sign the payload to create the JWT
+    // Get the associated actor
+    const actor = await this.actorService.findActorById(user.actorId);
+    if (!actor) {
+        this.logger.error(`Login error: User '${username}' has no associated ActivityPub actor.`);
+        throw new UnauthorizedException('User profile incomplete: No associated ActivityPub actor.');
+    }
 
-    this.logger.log(`User '${username}' logged in successfully, issued JWT.`);
+    const payload = { username: user.username, sub: user.id, actorId: actor.id }; // Include actorId in JWT payload
+    const accessToken = this.jwtService.sign(payload);
+    this.logger.log(`User '${username}' logged in successfully. Issued JWT.`);
+
     return { access_token: accessToken };
-  }
-
-  /**
-   * Registers a new user account and creates an associated ActivityPub actor.
-   * @param username The desired unique username for the new user.
-   * @param name The display name for the new user's ActivityPub profile.
-   * @param summary A short summary/bio for the new user's ActivityPub profile.
-   * @param password The plain text password for the new user (will be hashed).
-   * @returns The created actor entity (public data only).
-   * @throws ConflictException if the username already exists.
-   */
-  async register(username: string, name: string, summary: string, password: string): Promise<Partial<ActorEntity>> {
-    this.logger.log(`AuthService: Attempting to register new user: '${username}'.`);
-    
-    // Hash the plain text password before storing it in the database.
-    // A salt round of 10 is a good balance between security and performance.
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Use the AppService's `createActor` method to handle the creation of the ActivityPub actor,
-    // which includes generating key pairs and setting up the ActivityPub profile data.
-    // The `createActor` method also handles uniqueness checks for the username.
-    const newActorPublicData = await this.appService.createActor(username); // Only pass username
-    
-    // After actor is created, update its password hash and profile data
-    const actorToUpdate = await this.actorRepository.findOne({ where: { preferredUsername: username } }); // Changed to preferredUsername
-    if (actorToUpdate) {
-      actorToUpdate.passwordHash = hashedPassword;
-      // Ensure 'data' object exists before attempting to update its properties
-      if (!actorToUpdate.data) {
-        actorToUpdate.data = {};
-      }
-      actorToUpdate.data.name = name; // Update name in data payload
-      actorToUpdate.data.summary = summary; // Update summary in data payload
-      await this.actorRepository.save(actorToUpdate);
-    } else {
-      this.logger.error(`Registered actor '${username}' not found for password/profile update.`);
-      throw new Error(`Failed to find newly registered actor for update.`);
-    }
-
-    this.logger.log(`AuthService: User '${username}' registered and actor created successfully.`);
-    return newActorPublicData; // Return public-facing data of the new actor
   }
 }

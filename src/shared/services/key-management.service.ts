@@ -1,133 +1,204 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
-import * as crypto from 'crypto';
-import { Repository } from 'typeorm';
-import { HttpService } from '@nestjs/axios'; // For fetching remote public keys
-import { firstValueFrom } from 'rxjs'; // To convert AxiosObservable to Promise
+// src/shared/services/key-management.service.ts
+
+import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { ActorEntity } from '../../features/activitypub/entities/actor.entity';
 import { LoggerService } from './logger.service';
+import { generateKeyPairSync, createHash } from 'crypto'; // Import createHash for digest generation
+import * as path from 'path';
+import * as fs from 'fs/promises';
 
 /**
- * KeyManagementService handles the generation, storage, and retrieval of
- * RSA public and private keys for ActivityPub Actors. It also manages
- * fetching and caching public keys for remote actors.
+ * Service for managing cryptographic keys (RSA public/private pairs) for ActivityPub actors.
+ * In a production environment, private keys should be stored and retrieved from a secure
+ * Key Management System (KMS) like HashiCorp Vault. For development/MVP, this service
+ * provides a temporary mechanism for key generation and retrieval, either from environment
+ * variables or local files, with clear warnings about production implications.
  */
 @Injectable()
 export class KeyManagementService {
-  private readonly PUBLIC_KEY_CACHE_TTL = 3600 * 24; // Cache public keys for 24 hours (in seconds)
+  private readonly keysDirectory: string;
 
   constructor(
+    private readonly configService: ConfigService,
     @InjectRepository(ActorEntity)
     private readonly actorRepository: Repository<ActorEntity>,
-    private readonly httpService: HttpService,
-    private readonly logger: LoggerService,
+    private readonly logger: LoggerService, // Inject custom logger
   ) {
     this.logger.setContext('KeyManagementService');
+    this.keysDirectory = path.join(process.cwd(), 'data', 'keys'); // Define a local directory for dev keys
   }
 
   /**
-   * Generates a new RSA key pair (public and private keys) suitable for HTTP Signatures.
-   * This method is typically called when a new Actor is created.
-   * @returns An object containing the PEM-encoded public and private keys.
+   * Generates a new RSA public/private key pair for an ActivityPub actor.
+   *
+   * @returns An object containing the PEM-encoded private key and public key.
    */
-  generateKeyPair(): { publicKeyPem: string; privateKeyPem: string } {
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-      modulusLength: 2048, // Standard length for security
+  generateKeyPair(): { privateKeyPem: string; publicKeyPem: string } {
+    this.logger.log('Generating new RSA key pair...');
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048, // Recommended for strong security
       publicKeyEncoding: {
         type: 'spki', // SubjectPublicKeyInfo
         format: 'pem',
       },
       privateKeyEncoding: {
-        type: 'pkcs8', // PrivateKeyInfo
+        type: 'pkcs8', // Public-Key Cryptography Standards #8
         format: 'pem',
-        // cipher: 'aes-256-cbc', // Consider encrypting private key at rest in production
-        // passphrase: 'your-secure-passphrase', // Use a strong passphrase from secrets management
       },
     });
     this.logger.log('RSA key pair generated successfully.');
-    return { publicKeyPem: publicKey, privateKeyPem: privateKey };
+    return { privateKeyPem: privateKey, publicKeyPem: publicKey };
   }
 
   /**
-   * Retrieves the private key for a local Actor.
-   * This key is used for signing outgoing activities.
-   * @param actorId The ID (URI) of the local Actor.
-   * @returns The PEM-encoded private key.
-   * @throws NotFoundException if the actor is not found or has no private key.
-   */
-  async getPrivateKey(actorId: string): Promise<string> {
-    const actor = await this.actorRepository.findOne({ where: { activityPubId: actorId } });
-    if (!actor || !actor.privateKeyPem) {
-      this.logger.error(`Private key not found for local actor: ${actorId}`);
-      throw new Error(`Private key not found for actor: ${actorId}`); // Or a more specific exception
-    }
-    return actor.privateKeyPem;
-  }
-
-  /**
-   * Retrieves the public key for any ActivityPub Actor (local or remote) by its keyId URI.
-   * This method first checks the cache, then attempts to fetch the key via HTTP if not found.
-   * @param keyId The URI of the public key (e.g., https://instance.com/actors/alice#main-key).
-   * @returns The PEM-encoded public key.
-   * @throws Error if the public key cannot be retrieved.
+   * Retrieves the public key (PEM-encoded) for a given keyId.
+   * A keyId is typically an ActivityPub Actor's URI concatenated with '#main-key'.
+   * This method first checks local actors, then attempts to fetch from remote if not found.
+   *
+   * @param keyId The ID of the key to retrieve (e.g., https://example.com/users/alice#main-key).
+   * @returns The PEM-encoded public key string.
+   * @throws NotFoundException if the public key cannot be found.
+   * @throws InternalServerErrorException if there's an issue retrieving the key.
    */
   async getPublicKey(keyId: string): Promise<string> {
-    // 1. Check cache first
-    // const cachedPublicKey: string | undefined =
-    //   await this.cacheManager.get(keyId);
-    // if (cachedPublicKey) {
-    //   this.logger.debug(`Public key for ${keyId} found in cache.`);
-    //   return cachedPublicKey;
-    // }
+    this.logger.debug(`Attempting to retrieve public key for keyId: ${keyId}`);
 
-    this.logger.debug(`Public key for ${keyId} not in cache, fetching...`);
+    // Extract actor URI from keyId (assuming standard format: actorURI#keyName)
+    const actorUriMatch = keyId.match(/(.+?)#.+/);
+    if (!actorUriMatch || !actorUriMatch[1]) {
+      this.logger.warn(`Invalid keyId format: ${keyId}`);
+      throw new NotFoundException(`Public key not found: Invalid keyId format.`);
+    }
+    const actorUri = actorUriMatch[1];
 
+    // 1. Check local database for actor's public key
     try {
-      // 2. Fetch the public key from the keyId URI
-      // The keyId URI typically points to the Actor's profile, which contains the publicKey object.
-      const response = await firstValueFrom(
-        this.httpService.get(keyId, {
-          headers: {
-            Accept:
-              'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
-          },
-          timeout: 5000, // 5-second timeout for fetching remote keys
-        }),
-      );
+      const actor = await this.actorRepository.findOne({
+        where: { activityPubId: actorUri },
+        select: ['publicKeyPem'], // Select only the publicKeyPem to avoid loading private key
+      });
 
-      const actorProfile = response.data;
-
-      // Validate the response structure and extract the public key
-      if (
-        !actorProfile ||
-        !actorProfile.publicKey ||
-        !actorProfile.publicKey.publicKeyPem
-      ) {
-        throw new Error(
-          `Invalid Actor profile or missing public key at ${keyId}`,
-        );
+      if (actor?.publicKeyPem) {
+        this.logger.debug(`Public key found locally for actor: ${actorUri}`);
+        return actor.publicKeyPem;
       }
+    } catch (dbError) {
+      this.logger.error(`Database error retrieving public key for ${actorUri}: ${dbError.message}`, dbError.stack);
+      throw new InternalServerErrorException(`Failed to retrieve public key from database.`);
+    }
 
-      const publicKeyPem = actorProfile.publicKey.publicKeyPem;
+    // 2. If not found locally, attempt to fetch the actor's profile remotely
+    // This is a circular dependency if RemoteObjectService directly calls KeyManagementService
+    // which then calls RemoteObjectService. Instead, the logic to fetch remote actor's
+    // profile and extract public key should be in RemoteObjectService.
+    // For now, if the public key is not in our DB, we assume RemoteObjectService would have
+    // fetched and stored it if it was a known remote actor.
+    // This implies that any remote actor whose key is needed for signature verification
+    // must already be in our 'actors' table.
+    this.logger.warn(`Public key not found locally for keyId: ${keyId}.`);
+    throw new NotFoundException(`Public key not found for keyId: ${keyId}`);
+  }
 
-      // 3. Store in cache
-      // await this.cacheManager.set(
-      //   keyId,
-      //   publicKeyPem,
-      //   this.PUBLIC_KEY_CACHE_TTL * 1000,
-      // ); // TTL in milliseconds
-      // this.logger.log(`Public key for ${keyId} fetched and cached.`);
-      this.logger.log(`Public key for ${keyId} fetched.`);
+  /**
+   * Retrieves the private key (PEM-encoded) for a given local actor's internal ID.
+   * This method should only be used for local actors.
+   *
+   * @param actorId The internal database ID of the local actor.
+   * @returns The PEM-encoded private key string.
+   * @throws NotFoundException if the actor or their private key is not found.
+   * @throws InternalServerErrorException if there's an issue retrieving the key.
+   */
+  async getPrivateKey(actorId: string): Promise<string> {
+    this.logger.debug(`Attempting to retrieve private key for actor ID: ${actorId}`);
+    try {
+      const actor = await this.actorRepository.findOne({
+        where: { id: actorId, isLocal: true },
+        select: ['privateKeyPem'], // Explicitly select privateKeyPem
+      });
 
-      return publicKeyPem;
+      if (!actor) {
+        throw new NotFoundException(`Local actor with ID '${actorId}' not found.`);
+      }
+      if (!actor.privateKeyPem) {
+        // Fallback to loading from local file in development, if needed
+        try {
+          const privateKeyFromFile = await this.loadPrivateKeyLocally(actorId);
+          // Update the actor in DB if key was found in file but not DB
+          if (privateKeyFromFile) {
+            actor.privateKeyPem = privateKeyFromFile;
+            await this.actorRepository.save(actor); // Persist to DB for future use
+            return privateKeyFromFile;
+          }
+        } catch (fileError) {
+          this.logger.warn(`Private key not found in DB and failed to load from file for actor ${actorId}: ${fileError.message}`);
+        }
+        throw new NotFoundException(`Private key not found for actor ID '${actorId}'.`);
+      }
+      this.logger.debug(`Private key found for actor ID: ${actorId}`);
+      return actor.privateKeyPem;
     } catch (error) {
-      this.logger.error(
-        `Failed to retrieve public key for ${keyId}: ${error.message}`,
-        error.stack,
-      );
-      throw new Error(
-        `Failed to retrieve public key for ${keyId}: ${error.message}`,
-      );
+      this.logger.error(`Error retrieving private key for actor ${actorId}: ${error.message}`, error.stack);
+      if (error instanceof NotFoundException) {
+        throw error; // Re-throw specific NotFoundException
+      }
+      throw new InternalServerErrorException(`Failed to retrieve private key.`);
+    }
+  }
+
+  /**
+   * Generates a SHA-256 digest of a given string (typically the raw request body).
+   *
+   * @param data The string data to digest.
+   * @returns The base64-encoded SHA-256 digest.
+   */
+  generateDigest(data: string): string {
+    return createHash('sha256').update(data).digest('base64');
+  }
+
+  /**
+   * Securely stores a private key to a local file (for development only).
+   * In production, this should integrate with HashiCorp Vault or similar KMS.
+   *
+   * @param actorId The internal ID of the actor.
+   * @param privateKeyPem The PEM-encoded private key.
+   * @returns Promise<void>
+   */
+  async storePrivateKeyLocally(actorId: string, privateKeyPem: string): Promise<void> {
+    const filePath = path.join(this.keysDirectory, `${actorId}.pem`);
+    try {
+      await fs.mkdir(this.keysDirectory, { recursive: true });
+      await fs.writeFile(filePath, privateKeyPem, { mode: 0o600 }); // Owner read/write only
+      this.logger.warn(`Private key for actor ${actorId} stored locally at ${filePath}. THIS IS FOR DEVELOPMENT ONLY. USE KMS IN PRODUCTION.`);
+    } catch (error) {
+      this.logger.error(`Failed to store private key locally for actor ${actorId}: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to store private key locally.`);
+    }
+  }
+
+  /**
+   * Loads a private key from a local file (for development only).
+   * In production, this should integrate with HashiCorp Vault or similar KMS.
+   *
+   * @param actorId The internal ID of the actor.
+   * @returns The PEM-encoded private key string.
+   * @throws NotFoundException if the file does not exist.
+   * @throws InternalServerErrorException for other file system errors.
+   */
+  async loadPrivateKeyLocally(actorId: string): Promise<string> {
+    const filePath = path.join(this.keysDirectory, `${actorId}.pem`);
+    try {
+      const privateKeyPem = await fs.readFile(filePath, 'utf8');
+      this.logger.debug(`Private key for actor ${actorId} loaded from local file.`);
+      return privateKeyPem;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new NotFoundException(`Private key file for actor ${actorId} not found at ${filePath}.`);
+      }
+      this.logger.error(`Failed to load private key locally for actor ${actorId}: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to load private key locally.`);
     }
   }
 }

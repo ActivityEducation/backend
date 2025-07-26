@@ -1,4 +1,5 @@
 // src/app.module.ts
+// Refactored to include new entities
 
 import { Module, Logger } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -21,10 +22,15 @@ import { FollowEntity } from './features/activitypub/entities/follow.entity';
 import { ContentObjectEntity } from './features/activitypub/entities/content-object.entity';
 import { LikeEntity } from './features/activitypub/entities/like.entity';
 import { BlockEntity } from './features/activitypub/entities/block.entity';
+import { AnnounceEntity } from './features/activitypub/entities/announce.entity'; // New AnnounceEntity
 import { EducationPubModule } from './features/educationpub/educationpub.module';
-import { Flashcard } from './features/educationpub/views/flashcard.view';
+import { FlashcardEntity } from './features/educationpub/entities/flashcard.entity'; // New FlashcardEntity
+import { FlashcardModelEntity } from './features/educationpub/entities/flashcard-model.entity'; // New FlashcardModelEntity
+import { Flashcard } from './features/educationpub/views/flashcard.view'; // Keep view if still used elsewhere, but remove from entities array if it's purely a view
 import { HealthModule } from './features/health/health.module';
 import { FrontendModule } from './features/frontend/frontend.module';
+import { UserEntity } from './features/auth/entities/user.entity';
+import { ProcessedActivityEntity } from './features/activitypub/entities/processed-activity.entity';
 
 /**
  * AppModule
@@ -109,7 +115,7 @@ import { FrontendModule } from './features/frontend/frontend.module';
         database: configService.get<string>('DB_DATABASE'),
         // Entities are now registered within their respective feature modules (e.g., ActivityPubModule)
         // So, we remove the direct listing here.
-        entities: [ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity, Flashcard],
+        entities: [ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity, AnnounceEntity, FlashcardEntity, FlashcardModelEntity, Flashcard, UserEntity, AnnounceEntity, ProcessedActivityEntity],
         dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.
                            // In production, use database migrations (e.g., TypeORM CLI commands)

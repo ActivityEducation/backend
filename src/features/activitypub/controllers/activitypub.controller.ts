@@ -13,6 +13,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { AppService } from 'src/core/services/app.service';
 import { Activity } from 'src/shared/decorators/activity.decorator';
 import { User } from 'src/shared/decorators/user.decorator';
