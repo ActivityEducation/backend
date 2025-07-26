@@ -5,9 +5,14 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import * as jsonld from 'jsonld';
+import { validateOrReject, ValidationError } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+// NEW: Import LoggerService
+import { LoggerService } from '../services/logger.service';
 
 // Required for custom loading of contexts
 import '../contexts/custom-document.loader';
+import { provideLoggerOptions } from '../services/logger-config.provider';
 
 /**
  * Custom parameter decorator to extract and parse the ActivityPub JSON-LD body
@@ -24,9 +29,13 @@ import '../contexts/custom-document.loader';
  * }
  */
 export const Activity = createParamDecorator(
-  async (data: unknown, ctx: ExecutionContext) => {
+  async (expectedType: new (...args: any[]) => any, ctx: ExecutionContext) => {
+    
+    const loggerConfig = provideLoggerOptions().useValue;
+    const logger = new LoggerService(loggerConfig);
+    logger.setContext('ActivityDecorator');
+
     const request = ctx.switchToHttp().getRequest<Request>();
-    let _body: jsonld;
     let parsedBody: any; // Use 'any' to be flexible with parsed JSON structure
 
     // Prioritize rawBody if available, as it's explicitly configured for ActivityPub JSON-LD
@@ -34,6 +43,8 @@ export const Activity = createParamDecorator(
       try {
         parsedBody = JSON.parse((request as any).rawBody.toString('utf8'));
       } catch (error) {
+        // Use logger.error instead of console.log
+        logger.error(`Invalid JSON payload from rawBody: ${error.message}`, (error instanceof Error ? error.stack : undefined));
         throw new BadRequestException(`Invalid JSON payload from rawBody: ${error.message}`);
       }
     } else if (request.body instanceof Buffer) {
@@ -41,6 +52,8 @@ export const Activity = createParamDecorator(
       try {
         parsedBody = JSON.parse(request.body.toString('utf8'));
       } catch (error) {
+        // Use logger.error instead of console.log
+        logger.error(`Invalid JSON payload from body (Buffer): ${error.message}`, (error instanceof Error ? error.stack : undefined));
         throw new BadRequestException(`Invalid JSON payload from body (Buffer): ${error.message}`);
       }
     } else if (request.body && typeof request.body === 'object' && request.body !== null) {
@@ -50,6 +63,9 @@ export const Activity = createParamDecorator(
       parsedBody = request.body;
     } else {
       // If none of the above, the raw body was not found or not in expected format
+      logger.error(
+        'Raw request body not found or not in expected format. Ensure rawBody: true in NestFactory.create() and bodyParser.raw() middleware are configured correctly for ActivityPub content types.',
+      );
       throw new BadRequestException(
         'Raw request body not found or not in expected format. Ensure rawBody: true in NestFactory.create() and bodyParser.raw() middleware are configured correctly for ActivityPub content types.',
       );
@@ -70,7 +86,10 @@ export const Activity = createParamDecorator(
         ],
       };
 
-      console.log('_body before compact:', JSON.stringify(parsedBody, null, 2));
+      // Use logger.debug instead of console.log
+      logger.debug(`parsedBody before compact: ${JSON.stringify(parsedBody, null, 2)}`);
+      logger.debug(`parsedBody.object before compact: ${JSON.stringify(parsedBody.object, null, 2)}`);
+
 
       // Use jsonld.compact to process the incoming JSON-LD.
       // This will validate the context, expand terms, and then compact them
@@ -81,21 +100,51 @@ export const Activity = createParamDecorator(
         targetContext,
       );
 
+      // Use logger.debug instead of console.log
+      logger.debug(`compactedActivity after compact: ${JSON.stringify(compactedActivity, null, 2)}`);
+      logger.debug(`compactedActivity.object after compact: ${JSON.stringify(compactedActivity.object, null, 2)}`);
+
+
       // Basic validation: ensure the compacted object still has a type and ID
       if (!compactedActivity.type || !compactedActivity.id) {
+        logger.error(
+          'Compacted ActivityPub object is missing required "type" or "id" properties after JSON-LD processing.',
+        );
         throw new BadRequestException(
           'Compacted ActivityPub object is missing required "type" or "id" properties after JSON-LD processing.',
         );
       }
 
-      return compactedActivity;
+      // Convert the compacted plain object to an instance of the expected DTO class
+      // enableImplicitConversion helps with basic type conversions (e.g., string to number, string to Date)
+      const activityInstance = plainToInstance(expectedType, compactedActivity, {
+        enableImplicitConversion: true,
+      });
+
+      // Validate the DTO instance against its class-validator rules
+      await validateOrReject(activityInstance, {
+        whitelist: true, // Remove properties not defined in the DTO
+        forbidNonWhitelisted: true, // Throw an error if non-whitelisted properties are found
+        validationError: { target: false, value: true }, // Customize error output
+      });
+
+      return activityInstance; // Return the strongly typed and validated DTO instance
     } catch (error) {
-      // jsonld.js can throw various errors (e.g., if context is invalid, or parsing issues)
+      // Handle validation errors from class-validator
+      if (Array.isArray(error) && error.length > 0 && error[0] instanceof ValidationError) {
+        const validationErrors = error.map(e => Object.values(e.constraints || {})).flat();
+        // FIX: Pass undefined for stack argument as ValidationError array doesn't have it
+        logger.error(`Validation failed: ${validationErrors.join(', ')}`, undefined);
+        throw new BadRequestException(`Validation failed: ${validationErrors.join(', ')}`);
+      }
       // Catch specific jsonld errors or re-throw as BadRequestException
       if (error instanceof SyntaxError) {
+        logger.error(`Invalid JSON payload: ${error.message}`, (error instanceof Error ? error.stack : undefined));
         throw new BadRequestException(`Invalid JSON payload: ${error.message}`);
       }
-      // You might want more specific error handling for jsonld.js errors
+      logger.error(
+        `Failed to process ActivityPub JSON-LD payload: ${error.message}`, (error instanceof Error ? error.stack : undefined)
+      );
       throw new BadRequestException(
         `Failed to process ActivityPub JSON-LD payload: ${error.message}`,
       );

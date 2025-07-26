@@ -19,7 +19,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { RemoteObjectService } from './remote-object.service';
 import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
-import { FlashcardModelEntity } from 'src/features/educationpub/entities/flashcard-model.entity'; // NEW: Import FlashcardModelEntity
+import { FlashcardModelEntity } from 'src/features/educationpub/entities/flashcard-model.entity';
 import { URL } from 'url';
 import { randomUUID } from 'crypto';
 import { ActorService } from 'src/features/activitypub/services/actor.service';
@@ -51,15 +51,15 @@ export class AppService {
     @InjectRepository(LikeEntity)
     private likeRepository: Repository<LikeEntity>,
     @InjectRepository(FlashcardEntity)
-    private flashcardRepository: Repository<FlashcardEntity>, // Inject FlashcardEntity
-    @InjectRepository(FlashcardModelEntity) // NEW: Inject FlashcardModelRepository
+    private flashcardRepository: Repository<FlashcardEntity>,
+    @InjectRepository(FlashcardModelEntity)
     private readonly flashcardModelRepository: Repository<FlashcardModelEntity>,
     @InjectQueue('inbox') private inboxQueue: Queue,
     @InjectQueue('outbox') private outboxQueue: Queue,
     private readonly configService: ConfigService,
     private readonly logger: LoggerService,
     private readonly remoteObjectService: RemoteObjectService,
-    private readonly actorService: ActorService, // Inject ActorService
+    private readonly actorService: ActorService,
   ) {
     this.logger.setContext('AppService');
     const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
@@ -221,13 +221,36 @@ export class AppService {
         throw new BadRequestException('Activity has no actor specified.');
     }
 
+    // FIX: Add more robust extraction and logging for activity.object
+    this.logger.debug(`AppService: Raw activity.object from decorator: ${JSON.stringify(activity.object)}`);
+    this.logger.debug(`AppService: Type of activity.object from decorator: ${typeof activity.object}`);
+
+    let objectActivityPubId: string | undefined;
+    // Prioritize 'object' (compacted form), then 'as:object' (uncompacted form)
+    const rawObjectFromPayload = activity.object || activity['as:object'];
+
+    if (typeof rawObjectFromPayload === 'string') {
+        objectActivityPubId = rawObjectFromPayload;
+    } else if (typeof rawObjectFromPayload === 'object' && rawObjectFromPayload !== null) {
+        // If it's an object, try to get its 'id' or 'url'
+        objectActivityPubId = rawObjectFromPayload.id || rawObjectFromPayload.url;
+    }
+    // If objectActivityPubId is still undefined, it will be handled by normalizeUrl('')
+
+    // Ensure objectActivityPubId is a string for normalizeUrl, defaulting to empty string if still undefined
+    const normalizedObjectActivityPubId = normalizeUrl(objectActivityPubId || '');
+
+    this.logger.debug(`AppService: Extracted objectActivityPubId before normalizeUrl: ${objectActivityPubId}`);
+    this.logger.debug(`AppService: Final normalizedObjectActivityPubId for job: ${normalizedObjectActivityPubId}`);
+
+
     // Enqueue the activity for processing by the InboxProcessor
     await this.inboxQueue.add(
       'process-inbox-activity',
       {
         activityId: activityPubId,
         actorActivityPubId: actorActivityPubId,
-        objectActivityPubId: normalizeUrl(activity.object?.id || activity.object), // Handle direct object URI or embedded object
+        objectActivityPubId: normalizedObjectActivityPubId, // Use the correctly extracted and normalized object ID
         type: activity.type,
         data: activity, // Store the raw activity payload
         localActorId: localActor.id, // Pass the internal ID of the local recipient actor
@@ -490,67 +513,61 @@ export class AppService {
   }
 
   /**
-   * Retrieves a paginated collection of activities from an actor's inbox.
-   * This is typically private and requires authentication as the inbox owner.
-   * @param username The preferred username of the actor.
+   * Retrieves a paginated collection of activities from a local actor's inbox.
+   * @param username The preferred username of the local actor.
    * @param page The page number for pagination.
    * @param perPage The number of items per page.
    * @param authenticatedUserId The ID of the authenticated user making the request.
-   * @returns An ActivityPub OrderedCollection page.
+   * @returns An ActivityPub OrderedCollection page representing the actor's inbox.
    * @throws UnauthorizedException if the requesting user is not the inbox owner.
    */
   async getInboxCollection(username: string, page: number, perPage: number, authenticatedUserId: string): Promise<any> {
-    const actor = await this.actorService.findActorByPreferredUsername(username);
-    if (!actor) {
-      throw new NotFoundException(`Actor with username '${username}' not found.`);
-    }
+      this.logger.debug(`Fetching inbox for actor: ${username}, page: ${page}, perPage: ${perPage}`);
+      const actor = await this.actorService.findActorByPreferredUsername(username);
+      if (!actor) {
+          throw new NotFoundException(`Actor with username '${username}' not found.`);
+      }
 
-    const requestingActor = await this.actorService.findActorForUser(authenticatedUserId);
+      const requestingActor = await this.actorService.findActorForUser(authenticatedUserId);
 
-    // Ensure the requesting user is the owner of this inbox
-    if (!requestingActor || requestingActor.activityPubId !== actor.activityPubId) {
-      this.logger.warn(`Unauthorized access attempt to inbox of '${username}' by actor '${requestingActor?.activityPubId || 'N/A'}'`);
-      throw new UnauthorizedException('Access to this inbox is restricted to the owner.');
-    }
+      // Ensure the requesting user is the owner of this inbox
+      if (!requestingActor || requestingActor.activityPubId !== actor.activityPubId) {
+          this.logger.warn(`Unauthorized access attempt to inbox of '${username}' by actor '${requestingActor?.activityPubId || 'N/A'}'`);
+          throw new UnauthorizedException('Access to this inbox is restricted to the owner.');
+      }
 
-    const [activities, totalItems] = await this.activityRepository.findAndCount({
-      // For inbox, we fetch activities where this actor is the "object" of a "Deliver" or direct "To"
-      // or more broadly, activities where this actor is a recipient.
-      // The current ActivityEntity doesn't store direct recipients, but rather the object of the activity.
-      // This part would need refinement if ActivityEntity's `data` field doesn't capture recipients.
-      // For simplicity, for now, we'll fetch all activities processed by the InboxProcessor that *don't* have a localActorId, assuming they were for this instance's general consumption, or where the `object` field matches this actor's URI if it's a specific activity like Follow/Like.
-      // This is a simplification for MVP, a real inbox might need more complex recipient filtering.
-      // The `InboxProcessor` currently processes activities *for* a `localActorId`.
-      // So, here we would query `ActivityEntity` where `localActorId` matches `actor.id`.
-      where: { recipientActivityPubId: normalizeUrl(actor.activityPubId) }, // Use the new recipientActivityPubId for filtering
-      skip: (page - 1) * perPage,
-      take: perPage,
-      order: { createdAt: 'DESC' },
-    });
+      // CRITICAL FIX: Filter by recipientActivityPubId, not actorActivityPubId
+      const [activities, totalItems] = await this.activityRepository.findAndCount({
+          where: { recipientActivityPubId: normalizeUrl(actor.activityPubId) }, // CORRECTED FILTER
+          skip: (page - 1) * perPage,
+          take: perPage,
+          order: { createdAt: 'DESC' }, // Order by newest first
+      });
 
-    const items = activities.map(activity => activity.activityPubId);
+      const items = activities.map(act => act.activityPubId); // Return the IDs of the activities
 
-    const collectionId = actor.inbox;
-    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
-    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
-    const totalPages = Math.ceil(totalItems / perPage);
-    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
-    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
-    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
+      // Construct collection URLs
+      const collectionId = actor.inbox;
+      const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+      const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+      const totalPages = Math.ceil(totalItems / perPage);
+      const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+      const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${page}` : undefined;
+      const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${page}` : undefined;
 
-    return {
-      '@context': 'https://www.w3.org/ns/activitystreams',
-      id: collectionId,
-      type: 'OrderedCollectionPage',
-      totalItems: totalItems,
-      partOf: collectionId,
-      first: firstPageId,
-      last: lastPageId,
-      prev: prevPageId,
-      next: nextPageId,
-      current: currentPageId,
-      orderedItems: items,
-    };
+      return {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: collectionId,
+          type: 'OrderedCollectionPage',
+          totalItems: totalItems,
+          partOf: collectionId,
+          first: firstPageId,
+          last: lastPageId,
+          prev: prevPageId,
+          next: nextPageId,
+          current: currentPageId,
+          orderedItems: items,
+      };
   }
 
 
@@ -641,7 +658,7 @@ export class AppService {
           id: collectionId,
           type: 'OrderedCollectionPage',
           totalItems: totalItems,
-          partOf: collectionId, // Reference back to the full collection
+          partOf: collectionId,
           first: firstPageId,
           last: lastPageId,
           prev: prevPageId,

@@ -66,7 +66,8 @@ export class OutboxProcessor extends WorkerHost {
       throw new Error('Sender actor not found.');
     }
 
-    const privateKeyPem = await this.keyManagementService.getPrivateKey(senderActor.activityPubId);
+    // FIX: Pass senderActor.id (UUID) to getPrivateKey, not senderActor.activityPubId (URL)
+    const privateKeyPem = await this.keyManagementService.getPrivateKey(senderActor.id);
     if (!privateKeyPem) {
       this.logger.error(`Private key not found for actor '${senderActor.activityPubId}'. Cannot sign activity.`);
       throw new Error('Private key not found.');
@@ -91,13 +92,22 @@ export class OutboxProcessor extends WorkerHost {
 
     // If activity is public, send to followers' inboxes
     if (isPublic) {
-      const followers = await this.remoteObjectService.getActorFollowers(senderActor.activityPubId);
-      followers.forEach(followerUri => {
-        if (!recipients.includes(followerUri)) {
-          recipients.push(followerUri);
+      // FIX: Check if senderActor.followersUrl exists before passing it
+      if (senderActor.followersUrl) {
+        const followersCollection = await this.remoteObjectService.getActorFollowers(senderActor.followersUrl);
+        if (followersCollection && Array.isArray(followersCollection.orderedItems)) {
+          followersCollection.orderedItems.forEach(followerUri => {
+            if (!recipients.includes(followerUri)) {
+              recipients.push(followerUri);
+            }
+          });
+          this.logger.debug(`Activity is public. Added ${followersCollection.orderedItems.length} followers as recipients.`);
+        } else {
+          this.logger.warn(`Public activity but no followers found or followers collection malformed for actor ${senderActor.activityPubId}.`);
         }
-      });
-      this.logger.debug(`Activity is public. Adding ${followers.length} followers as recipients.`);
+      } else {
+        this.logger.warn(`Public activity but senderActor.followersUrl is undefined for actor ${senderActor.activityPubId}. Cannot fetch followers.`);
+      }
     }
 
     // Add direct recipients (excluding 'Public')
@@ -145,11 +155,12 @@ export class OutboxProcessor extends WorkerHost {
     const inboxUrlsToDeliver: Set<string> = new Set();
     for (const recipientUri of recipients) {
       try {
-        const inbox = await this.remoteObjectService.getActorInbox(recipientUri);
-        if (inbox) {
-          inboxUrlsToDeliver.add(inbox);
+        // FIX: getActorInbox expects actor's ActivityPub ID (URL), not internal ID
+        const actorProfile = await this.remoteObjectService.fetchRemoteObject(recipientUri);
+        if (actorProfile && actorProfile.inbox) {
+          inboxUrlsToDeliver.add(actorProfile.inbox);
         } else {
-          this.logger.warn(`Could not resolve inbox for recipient: ${recipientUri}.`);
+          this.logger.warn(`Could not resolve inbox for recipient: ${recipientUri}. Actor profile or inbox URL missing.`);
         }
       } catch (error) {
         this.logger.warn(`Error resolving inbox for ${recipientUri}: ${error.message}`);
@@ -188,18 +199,20 @@ export class OutboxProcessor extends WorkerHost {
           headers: ['(request-target)', 'host', 'date', 'digest'], // Ensure digest is signed
         });
 
+        // FIX: Pass the correct actorId (internal UUID) and activity payload to postSignedActivity
         const response = await this.remoteObjectService.postSignedActivity(
+          senderActor.id, // Pass the internal UUID of the sender actor
           inboxUrl,
           activity,
-          signedHeaders,
         );
 
-        if (response.ok) {
-          this.logger.log(`Successfully delivered activity '${activityId}' to ${inboxUrl}.`);
+        // Check for successful HTTP status codes (2xx)
+        if (response && response.status >= 200 && response.status < 300) {
+          this.logger.log(`Successfully delivered activity '${activityId}' to ${inboxUrl}. Status: ${response.status}`);
           successCount++;
         } else {
           this.logger.error(
-            `Failed to deliver activity '${activityId}' to ${inboxUrl}. Status: ${response.status} ${response.statusText}`,
+            `Failed to deliver activity '${activityId}' to ${inboxUrl}. Status: ${response?.status} ${response?.statusText || 'Unknown Error'}`,
           );
           failureCount++;
         }

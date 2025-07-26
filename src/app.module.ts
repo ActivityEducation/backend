@@ -16,17 +16,18 @@ import { ModerationModule } from './features/moderation/moderation.module';
 import { ActivityPubModule } from './features/activitypub/activitypub.module'; // The new ActivityPub module
 
 // Import entities from their new feature locations
+// FIX: Re-import all entities here for TypeOrmModule.forRootAsync
 import { ActorEntity } from './features/activitypub/entities/actor.entity';
 import { ActivityEntity } from './features/activitypub/entities/activity.entity';
 import { FollowEntity } from './features/activitypub/entities/follow.entity';
 import { ContentObjectEntity } from './features/activitypub/entities/content-object.entity';
 import { LikeEntity } from './features/activitypub/entities/like.entity';
 import { BlockEntity } from './features/activitypub/entities/block.entity';
-import { AnnounceEntity } from './features/activitypub/entities/announce.entity'; // New AnnounceEntity
+import { AnnounceEntity } from './features/activitypub/entities/announce.entity';
 import { EducationPubModule } from './features/educationpub/educationpub.module';
-import { FlashcardEntity } from './features/educationpub/entities/flashcard.entity'; // New FlashcardEntity
-import { FlashcardModelEntity } from './features/educationpub/entities/flashcard-model.entity'; // New FlashcardModelEntity
-import { Flashcard } from './features/educationpub/views/flashcard.view'; // Keep view if still used elsewhere, but remove from entities array if it's purely a view
+import { FlashcardEntity } from './features/educationpub/entities/flashcard.entity';
+import { FlashcardModelEntity } from './features/educationpub/entities/flashcard-model.entity';
+import { Flashcard } from './features/educationpub/views/flashcard.view'; // View, not an entity, but sometimes included for discovery
 import { HealthModule } from './features/health/health.module';
 import { FrontendModule } from './features/frontend/frontend.module';
 import { UserEntity } from './features/auth/entities/user.entity';
@@ -91,12 +92,12 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
 
     // Core application modules
     CoreModule,
-    CommonModule, // Provide shared components globally or explicitly import where needed
+    CommonModule, // Explicitly import CommonModule now that it's no longer @Global()
 
     // Feature modules
     AuthModule,
     ModerationModule,
-    ActivityPubModule, // Include the new ActivityPub feature module
+    ActivityPubModule,
     EducationPubModule,
     HealthModule,
     FrontendModule,
@@ -104,28 +105,34 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.
     TypeOrmModule.forRootAsync({
-      imports: [ConfigModule], // Import ConfigModule to inject ConfigService
-      inject: [ConfigService], // Inject ConfigService
+      imports: [ConfigModule],
+      inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        type: 'postgres', // Database type
+        type: 'postgres',
         host: configService.get<string>('DB_HOST'),
         port: configService.get<number>('DB_PORT'),
         username: configService.get<string>('DB_USERNAME'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_DATABASE'),
-        // ACTION: This array should now be empty as entities are registered
-        // within their respective feature modules (e.g., ActivityPubModule).
-        entities: [],
+        // FIX: Re-add all entities here so TypeORM can discover their metadata.
+        entities: [
+          ActorEntity,
+          ActivityEntity,
+          FollowEntity,
+          ContentObjectEntity,
+          LikeEntity,
+          BlockEntity,
+          AnnounceEntity,
+          FlashcardEntity,
+          FlashcardModelEntity,
+          Flashcard, // Views can also be listed here for discovery
+          UserEntity,
+          ProcessedActivityEntity,
+        ],
         dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.
-                           // In production, use database migrations (e.g., TypeORM CLI commands)
-                           // to manage schema changes safely and prevent data loss.
-                           // Example: npm run typeorm migration:create ./src/migrations/InitialSchema
-                           // Example: npm run typeorm migration:run
       }),
     }),
-    // Configure BullModule for Redis connection and define message queues.
-    // BullMQ uses Redis to store job data and manage queues.
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -136,19 +143,15 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
         },
       }),
     }),
-    // Remove TypeOrmModule.forFeature here as entities are now registered within feature modules.
-    // TypeOrmModule.forFeature([ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity]),
   ],
   providers: [
-    // Provide a Redis client instance for direct Redis operations (e.g., rate limiting).
-    // This uses 'ioredis' for a robust Redis client.
     {
       provide: 'REDIS_CLIENT',
       useFactory: (configService: ConfigService) => new Redis({
         host: configService.get<string>('REDIS_HOST'),
         port: configService.get<number>('REDIS_PORT'),
       }),
-      inject: [ConfigService], // Inject ConfigService to get Redis connection details
+      inject: [ConfigService],
     },
   ],
 })

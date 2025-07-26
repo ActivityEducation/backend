@@ -14,7 +14,7 @@ import { CoreModule } from 'src/core/core.module';
 import { ModerationModule } from '../moderation/moderation.module';
 import { UserEntity } from './entities/user.entity';
 import { ActivityPubModule } from '../activitypub/activitypub.module';
-import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard'; // NEW: Import JwtAuthGuard
+import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -22,9 +22,10 @@ import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard'; // NEW: Impor
     forwardRef(() => ModerationModule),
     forwardRef(() => ActivityPubModule),
     // Register ActorEntity and UserEntity with TypeORM for use in AuthService
+    // FIX: Ensure UserEntity is explicitly registered here.
     TypeOrmModule.forFeature([
-      ActorEntity,
-      UserEntity
+      UserEntity, // Ensure UserEntity is registered
+      ActorEntity // ActorEntity is also needed for AuthService
     ]),
     PassportModule,
     // Configure JwtModule asynchronously to load JWT secret from ConfigService
@@ -42,13 +43,13 @@ import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard'; // NEW: Impor
   providers: [
     AuthService,
     JwtStrategy,
-    JwtAuthGuard, // NEW: Provide JwtAuthGuard here
+    JwtAuthGuard,
   ],
   controllers: [AuthController],
   exports: [
     AuthService,
-    JwtAuthGuard, // NEW: Export JwtAuthGuard here
-    JwtModule, // Export JwtModule if other modules need to verify tokens
+    JwtAuthGuard,
+    JwtModule,
   ],
 })
 export class AuthModule {}
