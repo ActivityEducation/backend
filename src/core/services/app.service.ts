@@ -6,7 +6,7 @@ import {
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ConfigService } from '@nestjs/config'; // FIX: Corrected import syntax
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Repository } from 'typeorm';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
@@ -405,7 +405,7 @@ export class AppService {
       id: collectionId,
       type: 'OrderedCollectionPage', // For paginated results
       totalItems: totalItems,
-      partOf: collectionId, // Reference back to the full collection
+      partOf: collectionId,
       first: firstPageId,
       last: lastPageId,
       prev: prevPageId,
@@ -696,9 +696,24 @@ export class AppService {
   async getLocalContentObject(objectId: string): Promise<any> { // Updated return type to `any` for flexibility
       this.logger.debug(`Fetching local content object from DB for ID: ${objectId}`);
 
+      let normalizedObjectId: string;
+
+      // FIX: Check if objectId is a UUID. If so, construct the full canonical URI.
+      // A simple regex check for UUID format.
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(objectId)) {
+          // If it's a UUID, assume it's a local object and construct its full ActivityPub ID
+          normalizedObjectId = normalizeUrl(`${this.instanceBaseUrl}/objects/${objectId}`);
+          this.logger.debug(`AppService: Transformed UUID '${objectId}' to full URI: '${normalizedObjectId}' for lookup.`);
+      } else {
+          // Otherwise, assume it's already a full URI and normalize it
+          normalizedObjectId = normalizeUrl(objectId);
+      }
+
+
       // First, try to find it as a FlashcardEntity
       const flashcard = await this.flashcardRepository.findOne({
-          where: { activityPubId: normalizeUrl(objectId), deletedAt: IsNull() },
+          where: { activityPubId: normalizedObjectId, deletedAt: IsNull() }, // Use normalizedObjectId
           relations: ['eduModel', 'creator'], // Ensure relations are loaded if needed for mapping
       });
 
@@ -728,7 +743,7 @@ export class AppService {
 
       // Second, try to find it as a FlashcardModelEntity
       const flashcardModel = await this.flashcardModelRepository.findOne({
-          where: { activityPubId: normalizeUrl(objectId) },
+          where: { activityPubId: normalizedObjectId }, // Use normalizedObjectId
       });
 
       if (flashcardModel) {
@@ -755,7 +770,7 @@ export class AppService {
 
       // If not a Flashcard or FlashcardModel, try to find it as a generic ContentObjectEntity
       const contentObject = await this.contentObjectRepository.findOne({
-          where: { activityPubId: normalizeUrl(objectId) },
+          where: { activityPubId: normalizedObjectId }, // Use normalizedObjectId
       });
 
       if (contentObject) {

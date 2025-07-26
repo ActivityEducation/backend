@@ -317,10 +317,10 @@ export class FlashcardService {
     const createActivityId = `${this.appService.getInstanceBaseUrl()}/activities/${activityUUID}`;
 
     const flashcardContent =
-      `Flashcard: ${flashcard.name}\n\n` +
+      `Flashcard: ${flashcard.name}<br /><br />` +
       Object.entries(flashcard.eduFieldsData)
         .map(([key, value]) => `${key}: ${value}`)
-        .join('\n');
+        .join('<br />');
 
     const activityObject = {
       '@context': [
