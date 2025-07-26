@@ -1,3 +1,5 @@
+// src/features/activitypub/activity-handler/handlers/undo.handler.ts
+
 import { IActivityHandler } from '../interfaces/activity-handler.interface';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -30,134 +32,145 @@ export class UndoHandler implements IActivityHandler {
     this.logger.setContext('UndoHandler'); // Sets context for the logger
   }
 
-  async handleInbox(activity: any): Promise<void> {
-    this.logger.debug(`Received Undo activity: ${JSON.stringify(activity)}`);
+  // Renamed parameter 'activity' to 'jobPayload' for clarity, as it contains more than just the AP activity
+  async handleInbox(jobPayload: { localActorId: string, activity: any, activityId: string, actorActivityPubId: string, objectActivityPubId: string }): Promise<void> {
+    this.logger.debug(`Received Undo activity (jobPayload): ${JSON.stringify(jobPayload)}`);
 
-    const actorActivityPubId = String(activity.actorActivityPubId);
+    const actorPerformingUndo = jobPayload.actorActivityPubId; // Actor who initiated the Undo
+    const mainActivity = jobPayload.activity; // The actual ActivityPub JSON-LD for the Undo activity
 
-    this.logger.log(`Handling 'Undo' activity from '${actorActivityPubId}'.`);
-    if (activity.data?.['as:object'] && typeof activity.data?.['as:object'] === 'object') {
-      const undoObjectType = activity.data?.['as:object']?.type;
-      const undoActor = activity.data?.['as:actor']?.id;
-      const undoObjectActor = activity.data?.['as:object']?.['as:actor'].id;
-      const undoObjectTarget = activity.data?.['as:object']?.['as:object'].id;
+    this.logger.log(`Handling 'Undo' activity from '${actorPerformingUndo}'.`);
 
-      if (undoActor !== undoObjectActor) {
-        throw new BadRequestException('Undo actor and object actor are not the same.');
+    // The 'object' of an Undo activity is typically the activity that is being undone.
+    // Ensure that 'mainActivity.object' is an object and contains necessary properties.
+    if (mainActivity.object && typeof mainActivity.object === 'object') {
+      const undoneActivity = mainActivity.object; // This is the original activity (e.g., a Follow or Like)
+
+      const undoObjectType = undoneActivity.type;
+      const undoActor = undoneActivity.actor; // The actor of the *undone* activity (e.g., the follower in Undo Follow)
+      const undoObjectTarget = undoneActivity.object; // The object of the *undone* activity (e.g., the followed in Undo Follow)
+
+      // Validate that the actor performing the Undo is the same as the actor of the activity being undone.
+      // This is a security and logical check as per ActivityPub specifications for Undo.
+      if (String(undoActor) !== actorPerformingUndo) {
+        this.logger.warn(`Security check failed: Undo actor '${actorPerformingUndo}' does not match actor of undone activity '${undoActor}'. Skipping processing.`);
+        throw new BadRequestException('Undo actor and original activity actor are not the same. This is a potential security mismatch.');
       }
+
+      // Ensure extracted IDs are strings for repository lookups
+      const undoneActorActivityPubId = String(undoActor);
+      const undoneObjectActivityPubId = String(undoObjectTarget);
 
       switch (undoObjectType) {
         case 'Follow':
           this.logger.log(
-            `Processing Undo Follow: '${undoObjectActor}' unfollowing '${undoObjectTarget}'.`,
+            `Processing Undo Follow: '${undoneActorActivityPubId}' unfollowing '${undoneObjectActivityPubId}'.`,
           );
-          // When an Undo Follow is received, it means the remote actor is no longer following our local actor.
-          // We need to delete the follow relationship where the remote actor is the follower and our local actor is the followed.
           const resultFollow = await this.followRepository.delete({
-            followerActivityPubId: undoObjectActor, // The remote actor who is unfollowing
-            followedActivityPubId: undoObjectTarget, // Our local actor who was followed
+            followerActivityPubId: undoneActorActivityPubId,
+            followedActivityPubId: undoneObjectActivityPubId,
           });
           if (resultFollow.affected && resultFollow.affected > 0) {
             this.logger.log(
-              `Removed Follow relationship: '${undoObjectActor}' is no longer following '${undoObjectTarget}'.`,
+              `Removed Follow relationship: '${undoneActorActivityPubId}' is no longer following '${undoneObjectActivityPubId}'.`,
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Follow, but relationship not found: '${undoObjectActor}' -> '${undoObjectTarget}'. No action taken.`,
+              `Attempted to Undo Follow, but relationship not found: '${undoneActorActivityPubId}' -> '${undoneObjectActivityPubId}'. No action taken.`,
             );
           }
           break;
         case 'Like':
           this.logger.log(
-            `Processing Undo Like: '${undoObjectActor}' unliking '${undoObjectTarget}'.`,
+            `Processing Undo Like: '${undoneActorActivityPubId}' unliking '${undoneObjectActivityPubId}'.`,
           );
           const resultLike = await this.likeRepository.delete({
-            likerActivityPubId: undoObjectActor,
-            likedObjectActivityPubId: undoObjectTarget,
+            likerActivityPubId: undoneActorActivityPubId,
+            likedObjectActivityPubId: undoneObjectActivityPubId,
           });
           if (resultLike.affected && resultLike.affected > 0) {
             this.logger.log(
-              `Removed Like relationship: '${undoObjectActor}' no longer likes '${undoObjectTarget}'.`,
+              `Removed Like relationship: '${undoneActorActivityPubId}' no longer likes '${undoneObjectActivityPubId}'.`,
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Like, but relationship not found: '${undoObjectActor}' liked '${undoObjectTarget}'. No action taken.`,
+              `Attempted to Undo Like, but relationship not found: '${undoneActorActivityPubId}' liked '${undoneObjectActivityPubId}'. No action taken.`,
             );
           }
           break;
         case 'Announce':
           this.logger.log(
-            `Processing Undo Announce from '${undoObjectActor}' for object: '${undoObjectTarget}'.`,
+            `Processing Undo Announce from '${undoneActorActivityPubId}' for object: '${undoneObjectActivityPubId}'.`,
           );
           const resultAnnounce = await this.activityRepository.delete({
             type: 'Announce',
-            actorActivityPubId: undoObjectActor,
-            objectActivityPubId: undoObjectTarget,
+            actorActivityPubId: undoneActorActivityPubId,
+            objectActivityPubId: undoneObjectActivityPubId,
           });
           if (resultAnnounce.affected && resultAnnounce.affected > 0) {
             this.logger.log(
-              `Removed Announce activity: '${undoObjectActor}' no longer announces '${undoObjectTarget}'.`,
+              `Removed Announce activity: '${undoneActorActivityPubId}' no longer announces '${undoneObjectActivityPubId}'.`,
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Announce, but activity not found: '${undoObjectActor}' announced '${undoObjectTarget}'. No action taken.`,
+              `Attempted to Undo Announce, but activity not found: '${undoneActorActivityPubId}' announced '${undoneObjectActivityPubId}'. No action taken.`,
             );
           }
           break;
         case 'Block':
           this.logger.log(
-            `Processing Undo Block: '${undoObjectActor}' unblocking '${undoObjectTarget}'.`,
+            `Processing Undo Block: '${undoneActorActivityPubId}' unblocking '${undoneObjectActivityPubId}'.`,
           );
           const resultBlock = await this.blockRepository.delete({
-            blockerActivityPubId: undoObjectActor,
-            blockedActivityPubId: undoObjectTarget,
+            blockerActivityPubId: undoneActorActivityPubId,
+            blockedActivityPubId: undoneObjectActivityPubId,
           });
           if (resultBlock.affected && resultBlock.affected > 0) {
             this.logger.log(
-              `Removed Block relationship: '${undoObjectActor}' no longer blocks '${undoObjectTarget}'.`,
+              `Removed Block relationship: '${undoneActorActivityPubId}' no longer blocks '${undoneObjectActivityPubId}'.`,
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Block, but relationship not found: '${undoObjectActor}' blocked '${undoObjectTarget}'. No action taken.`,
+              `Attempted to Undo Block, but relationship not found: '${undoneActorActivityPubId}' blocked '${undoneObjectActivityPubId}'. No action taken.`,
             );
           }
           break;
         case 'Create':
           this.logger.log(
-            `Processing Undo Create (effectively Delete) for object: '${undoObjectTarget}'.`,
+            `Processing Undo Create (effectively Delete) for object: '${undoneObjectActivityPubId}'.`,
           );
-          if (undoObjectTarget) {
+          if (undoneObjectActivityPubId) {
             const localContentObject =
               await this.contentObjectRepository.findOne({
-                where: { activityPubId: undoObjectTarget },
+                where: { activityPubId: undoneObjectActivityPubId },
               });
             if (localContentObject) {
               await this.contentObjectRepository.softDelete(
                 localContentObject.id,
               );
               this.logger.log(
-                `Soft-deleted local content object (ID: '${undoObjectTarget}') due to Undo Create activity from '${actorActivityPubId}'.`,
+                `Soft-deleted local content object (ID: '${undoneObjectActivityPubId}') due to Undo Create activity from '${actorPerformingUndo}'.`,
               );
             } else {
               this.logger.log(
-                `Received Undo Create for non-local or non-existent object: '${undoObjectTarget}'. No local action taken.`,
+                `Received Undo Create for non-local or non-existent object: '${undoneObjectActivityPubId}'. No local action taken.`,
               );
             }
           } else {
             this.logger.warn(
-              `Undo Create activity from '${actorActivityPubId}' missing target object ID. Skipping processing.`,
+              `Undo Create activity from '${actorPerformingUndo}' missing target object ID. Skipping processing.`,
             );
           }
           break;
         default:
           this.logger.log(
-            `Undo activity from '${actorActivityPubId}' with unhandled object type: '${undoObjectType}'. Skipping processing.`,
+            `Undo activity from '${actorPerformingUndo}' with unhandled object type: '${undoObjectType}'. Skipping processing.`,
           );
           break;
       }
     } else {
       this.logger.warn(
-        `Malformed Undo activity received from '${actorActivityPubId}': missing object or object type. Skipping processing. Activity object: ${JSON.stringify(activity.data.object)}`,
+        `Malformed Undo activity received from '${actorPerformingUndo}': missing object or object type. Skipping processing. Activity object: ${JSON.stringify(mainActivity.object)}`,
       );
     }
     return;

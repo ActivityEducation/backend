@@ -9,6 +9,7 @@ import { LoggerService } from 'src/shared/services/logger.service';
 import { ProcessedActivityEntity } from '../entities/processed-activity.entity';
 import { HandlerDiscoveryService } from '../activity-handler/handler-discovery.service';
 import { normalizeUrl } from 'src/shared/utils/url-normalizer';
+import { BadRequestException } from '@nestjs/common'; // Import BadRequestException
 
 /**
  * InboxProcessor
@@ -45,19 +46,20 @@ export class InboxProcessor extends WorkerHost {
    * @param job The job containing the activity data.
    */
   async process(job: Job<any>) {
-    const { localActorId, data: activity, activityId } = job.data;
-    const jobId = job.id; // This is the normalized activityId from AppService, used for deduplication
+    // Correct destructuring and ensure 'activityPayload' (raw AP payload) is explicitly checked
+    const { localActorId, data: activityPayload, activityId, actorActivityPubId, objectActivityPubId, type: activityTypeFromJob } = job.data;
+    const jobId = job.id;
 
-    this.logger.log(`Processing inbox job '${jobId}' for activity type: '${activity.type}'.`);
-
-    if (!activity || !activity.type) {
-      this.logger.warn(`Job '${jobId}' contains malformed activity (missing type). Skipping.`);
-      return;
+    // Robust null/undefined checks for the core activity payload
+    // Ensure that activityPayload is an object and has a 'type' property
+    if (!activityPayload || typeof activityPayload !== 'object' || typeof activityPayload.type === 'undefined') {
+      this.logger.warn(`Job '${jobId}' contains malformed activity payload (data object or its 'type' property is missing). Skipping.`);
+      throw new BadRequestException(`Malformed activity payload for job ${jobId}. Missing 'data' object or 'type' property within 'data'.`);
     }
 
+    this.logger.log(`Processing inbox job '${jobId}' for activity type: '${activityPayload.type}'.`);
+
     // --- Deduplication Check (primary via job.id, but double-check here for robustness) ---
-    // The AppService already performs an initial deduplication check before enqueuing.
-    // This check here is a safeguard if the job somehow gets re-added or if the initial check was bypassed.
     if (activityId) {
       const existingProcessedActivity = await this.processedActivityRepository.findOne({ where: { activityId: normalizeUrl(activityId) } });
       if (existingProcessedActivity) {
@@ -68,41 +70,40 @@ export class InboxProcessor extends WorkerHost {
 
     try {
       // Determine the actor who sent this activity
-      const actorActivityPubId = activity.actor;
-      if (!actorActivityPubId) {
-        this.logger.warn(`Activity '${jobId}' missing 'actor' field. Cannot process without sender. Activity: ${JSON.stringify(activity)}`);
-        // We might choose to store this as an 'unattributed' activity or reject it. For now, skip.
-        return;
+      const senderActorActivityPubId = actorActivityPubId || activityPayload.actor;
+      if (!senderActorActivityPubId) {
+        this.logger.warn(`Activity '${jobId}' missing 'actor' field. Cannot process without sender. Activity: ${JSON.stringify(activityPayload)}`);
+        throw new BadRequestException('Activity has no actor specified.');
       }
 
       // Store the raw incoming activity payload for audit/debugging
       const newActivityRecord = this.activityRepository.create({
-        activityPubId: normalizeUrl(activity.id),
-        type: activity.type,
-        actorActivityPubId: normalizeUrl(actorActivityPubId),
-        objectActivityPubId: normalizeUrl(activity.object?.id || activity.object), // Object can be full object or URI
-        data: activity, // Store full payload
+        activityPubId: normalizeUrl(activityPayload.id),
+        type: activityPayload.type,
+        actorActivityPubId: normalizeUrl(senderActorActivityPubId),
+        objectActivityPubId: normalizeUrl(activityPayload.object?.id || activityPayload.object), // Object can be full object or URI
+        data: activityPayload, // Store full payload
         // actor: localActor, // Do not link localActor directly here, as this is the sender, not necessarily local.
       });
       await this.activityRepository.save(newActivityRecord);
       this.logger.debug(`Raw incoming activity '${newActivityRecord.activityPubId}' stored.`);
 
       // Find the appropriate handler for the activity type
-      const handler = this.handlerDiscoveryService.getHandler(activity.type);
+      const handler = this.handlerDiscoveryService.getHandler(activityPayload.type);
       if (handler) {
-        this.logger.log(`Dispatching activity type '${activity.type}' to handler: ${handler.constructor.name}`);
+        this.logger.log(`Dispatching activity type '${activityPayload.type}' to handler: ${handler.constructor.name}`);
         // Pass the activity payload along with derived metadata
         await handler.handleInbox({
           localActorId: localActorId, // The local actor who received this (if applicable)
-          activity: activity, // Raw ActivityPub payload
-          activityId: normalizeUrl(activity.id), // Normalized ActivityPub ID of the activity
-          actorActivityPubId: normalizeUrl(actorActivityPubId), // Normalized ActivityPub ID of the sender
-          objectActivityPubId: normalizeUrl(activity.object?.id || activity.object), // Normalized AP ID of the object
+          activity: activityPayload, // Raw ActivityPub payload
+          activityId: normalizeUrl(activityId), // Normalized ActivityPub ID of the activity
+          actorActivityPubId: normalizeUrl(senderActorActivityPubId), // Normalized ActivityPub ID of the sender
+          objectActivityPubId: normalizeUrl(activityPayload.object?.id || activityPayload.object), // Normalized AP ID of the object
           // Add any other parsed/normalized fields needed by handlers
         });
-        this.logger.log(`Successfully handled inbox activity '${jobId}' of type '${activity.type}'.`);
+        this.logger.log(`Successfully handled inbox activity '${jobId}' of type '${activityPayload.type}'.`);
       } else {
-        this.logger.warn(`No handler found for activity type '${activity.type}' (Job ID: ${jobId}). Activity will be stored but not further processed.`);
+        this.logger.warn(`No handler found for activity type '${activityPayload.type}' (Job ID: ${jobId}). Activity will be stored but not further processed.`);
       }
 
       // Mark the activity as processed only after successful handling by the specific handler
@@ -113,7 +114,7 @@ export class InboxProcessor extends WorkerHost {
       }
 
     } catch (error) {
-      this.logger.error(`Failed to process inbox activity '${jobId}' (Type: ${activity.type}): ${error.message}`, error.stack);
+      this.logger.error(`Failed to process inbox activity '${jobId}' (Type: ${activityPayload.type}): ${error.message}`, error.stack);
       // Re-throw the error so BullMQ can handle retries if configured
       throw error;
     }
