@@ -1,9 +1,10 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+import { getNestedProperty } from '../utils/object-property-accessor';
 
 /**
  * Custom parameter decorator to extract the authenticated user object (or a specific property)
  * from the request. This simplifies accessing user data in controllers.
- * Usage: `@User() user: UserDto` or `@User('id') userId: string`.
+ * Usage: `@User() user: UserDto` or `@User('id') userId: string` or `@User('actor.activityPubId') actorId: string`.
  */
 export const User = createParamDecorator(
   (data: string, ctx: ExecutionContext) => {
@@ -12,6 +13,6 @@ export const User = createParamDecorator(
 
     // If a specific property name is provided (e.g., 'id', 'username'), return that property.
     // Otherwise, return the entire user object.
-    return data ? user?.[data] : user;
+    return data ? getNestedProperty(user, data) : user;
   },
 );

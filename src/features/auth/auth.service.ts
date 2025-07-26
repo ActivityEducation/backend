@@ -1,107 +1,140 @@
-import { Injectable, UnauthorizedException, ConflictException } from '@nestjs/common'; // Import ConflictException
-import { JwtService } from '@nestjs/jwt'; // For creating and signing JWTs
-import { InjectRepository } from '@nestjs/typeorm'; // For injecting TypeORM repositories
-import { Repository } from 'typeorm'; // TypeORM Repository type
-import * as bcrypt from 'bcrypt'; // Import bcrypt for password hashing and comparison
-import { AppService } from '../../core/services/app.service';
-import { ActorEntity } from '../activitypub/entities/actor.entity';
+// src/features/auth/auth.service.ts
+
+import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import * as bcrypt from 'bcrypt';
+import { UserEntity } from './entities/user.entity';
+import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
 import { LoggerService } from 'src/shared/services/logger.service';
+import { ActorService } from 'src/features/activitypub/services/actor.service'; // Import ActorService
 
 @Injectable()
 export class AuthService {
   constructor(
-    private jwtService: JwtService, // JWT service for token operations
-    private readonly logger: LoggerService, // Custom logger
-    @InjectRepository(ActorEntity)
-    private readonly actorRepository: Repository<ActorEntity>, // Repository for ActorEntity
-    private readonly appService: AppService, // AppService for ActivityPub actor creation
+    @InjectRepository(UserEntity)
+    private usersRepository: Repository<UserEntity>,
+    private jwtService: JwtService,
+    private readonly logger: LoggerService,
+    private readonly actorService: ActorService, // Inject ActorService
   ) {
-    this.logger.setContext('AuthService'); // Set context for the logger
+    this.logger.setContext('AuthService');
   }
 
   /**
-   * Validates user credentials (username and password) and issues a JWT upon successful login.
-   * @param username The username attempting to log in.
-   * @param password The plain text password provided by the user.
-   * @returns An object containing the access token.
-   * @throws UnauthorizedException if credentials are invalid or user is not found.
+   * Registers a new user and creates an associated ActivityPub Actor.
+   * @param registerDto - The registration data.
+   * @returns The newly created user entity with its actor.
    */
-  async login(username: string, password?: string): Promise<{ access_token: string }> {
-    this.logger.log(`Attempting login for user: '${username}'.`);
-    const actor = await this.actorRepository.findOne({ where: { preferredUsername: username } }); // Changed to preferredUsername
+  async register(registerDto: RegisterDto): Promise<UserEntity | null> {
+    this.logger.log(`Attempting to register new user: ${registerDto.username}`);
 
-    if (!actor) {
-      this.logger.warn(`Login failed: User '${username}' not found.`);
-      throw new UnauthorizedException('Invalid credentials');
+    const existingUser = await this.usersRepository.findOne({
+      where: { username: registerDto.username },
+    });
+    if (existingUser) {
+      throw new ConflictException('Username already taken.');
     }
 
-    // Special handling for the default 'testuser' which might not have a password hash.
-    // In a production system, all users should have a password hash.
-    if (actor.preferredUsername !== 'testuser') {
-      if (!password) {
-        this.logger.warn(`Login failed for '${username}': Password not provided.`);
-        throw new UnauthorizedException('Password is required.');
-      }
-      if (!actor.passwordHash) {
-        this.logger.warn(`Login failed for '${username}': No password hash found for this user. Account misconfigured?`);
-        throw new UnauthorizedException('User account not configured for password login.');
-      }
-      // Compare the provided plain text password with the stored hashed password
-      if (!await bcrypt.compare(password, actor.passwordHash)) {
-        this.logger.warn(`Login failed for '${username}': Invalid password.`);
-        throw new UnauthorizedException('Invalid credentials');
-      }
-    } else {
-      // For 'testuser', allow login without a password.
-      this.logger.log(`Allowing login for default 'testuser' without password (development mode).`);
+    const hashedPassword = await bcrypt.hash(registerDto.password, 10);
+
+    // Create user entity
+    const newUser = this.usersRepository.create({
+      username: registerDto.username,
+      password: hashedPassword,
+    });
+
+    const savedUser = await this.usersRepository.save(newUser);
+    this.logger.log(`User '${savedUser.username}' saved to database.`);
+
+    // Create ActivityPub Actor for the new user
+    try {
+      const newActor = await this.actorService.createActorForUser(
+        savedUser.id, // Pass the internal user ID
+        registerDto.username,
+        registerDto.name,
+        registerDto.summary,
+      );
+      // Link the actor to the user
+      savedUser.actor = newActor;
+      await this.usersRepository.save(savedUser); // Save again to update the user with the linked actor
+      this.logger.log(`ActivityPub Actor '${newActor.activityPubId}' created for user '${savedUser.username}'.`);
+    } catch (actorError) {
+      this.logger.error(
+        `Failed to create ActivityPub Actor for user '${savedUser.username}': ${actorError.message}`,
+        actorError.stack,
+      );
+      // Optionally, roll back user creation or mark user as "actor creation failed"
+      // For MVP, we might log and proceed, assuming the actor creation is non-blocking.
+      // For robustness, consider a transaction or a cleanup mechanism.
+      throw new NotFoundException(`User created, but failed to create associated ActivityPub Actor: ${actorError.message}`);
     }
 
-    // Create a JWT payload. 'sub' (subject) is a standard JWT claim, typically holding the user ID.
-    const payload = { username: actor.preferredUsername, sub: actor.id };
-    const accessToken = this.jwtService.sign(payload); // Sign the payload to create the JWT
-
-    this.logger.log(`User '${username}' logged in successfully, issued JWT.`);
-    return { access_token: accessToken };
+    // Load the actor relation before returning to ensure it's available
+    return this.usersRepository.findOne({
+      where: { id: savedUser.id },
+      relations: ['actor'], // Ensure actor is loaded
+    });
   }
 
   /**
-   * Registers a new user account and creates an associated ActivityPub actor.
-   * @param username The desired unique username for the new user.
-   * @param name The display name for the new user's ActivityPub profile.
-   * @param summary A short summary/bio for the new user's ActivityPub profile.
-   * @param password The plain text password for the new user (will be hashed).
-   * @returns The created actor entity (public data only).
-   * @throws ConflictException if the username already exists.
+   * Validates user credentials and returns a JWT token upon successful login.
+   * @param loginDto - The login credentials.
+   * @returns An object containing the JWT access token.
    */
-  async register(username: string, name: string, summary: string, password: string): Promise<Partial<ActorEntity>> {
-    this.logger.log(`AuthService: Attempting to register new user: '${username}'.`);
-    
-    // Hash the plain text password before storing it in the database.
-    // A salt round of 10 is a good balance between security and performance.
-    const hashedPassword = await bcrypt.hash(password, 10);
+  async login(user: UserEntity): Promise<{ access_token: string }> {
+    this.logger.log(`Generating JWT for user: ${user.username}`);
+    // The passport local strategy has already validated the user.
+    // We just need to sign the JWT.
+    const payload = { username: user.username, sub: user.id }; // 'sub' typically holds the user ID
+    return {
+      access_token: this.jwtService.sign(payload),
+    };
+  }
 
-    // Use the AppService's `createActor` method to handle the creation of the ActivityPub actor,
-    // which includes generating key pairs and setting up the ActivityPub profile data.
-    // The `createActor` method also handles uniqueness checks for the username.
-    const newActorPublicData = await this.appService.createActor(username); // Only pass username
-    
-    // After actor is created, update its password hash and profile data
-    const actorToUpdate = await this.actorRepository.findOne({ where: { preferredUsername: username } }); // Changed to preferredUsername
-    if (actorToUpdate) {
-      actorToUpdate.passwordHash = hashedPassword;
-      // Ensure 'data' object exists before attempting to update its properties
-      if (!actorToUpdate.data) {
-        actorToUpdate.data = {};
-      }
-      actorToUpdate.data.name = name; // Update name in data payload
-      actorToUpdate.data.summary = summary; // Update summary in data payload
-      await this.actorRepository.save(actorToUpdate);
-    } else {
-      this.logger.error(`Registered actor '${username}' not found for password/profile update.`);
-      throw new Error(`Failed to find newly registered actor for update.`);
+  /**
+   * Finds a user by their internal database ID, eagerly loading their associated actor.
+   * This is used by the JwtStrategy to retrieve the authenticated user.
+   * @param id - The internal user ID.
+   * @returns The UserEntity or undefined if not found.
+   */
+  async findUserById(id: string): Promise<UserEntity | null> {
+    this.logger.debug(`Attempting to find user by ID: ${id}`);
+    const user = await this.usersRepository.findOne({
+      where: { id },
+      relations: ['actor'], // Eagerly load the associated actor
+    });
+    if (!user) {
+      this.logger.warn(`User with ID '${id}' not found.`);
+    }
+    return user;
+  }
+
+  /**
+   * Validates a user's password during login.
+   * Used by the local strategy.
+   * @param username - The username.
+   * @param pass - The plaintext password.
+   * @returns The UserEntity if credentials are valid, null otherwise.
+   */
+  async validateUser(username: string, pass: string): Promise<UserEntity | null> {
+    this.logger.debug(`Validating credentials for user: ${username}`);
+    const user = await this.usersRepository.findOne({ where: { username } });
+    if (!user) {
+      this.logger.warn(`User '${username}' not found during validation.`);
+      return null;
     }
 
-    this.logger.log(`AuthService: User '${username}' registered and actor created successfully.`);
-    return newActorPublicData; // Return public-facing data of the new actor
+    const isPasswordValid = await bcrypt.compare(pass, user.password);
+    if (!isPasswordValid) {
+      this.logger.warn(`Invalid password for user: ${username}`);
+      return null;
+    }
+
+    // Return the user without the password hash
+    const { password, ...result } = user;
+    return result as UserEntity;
   }
 }

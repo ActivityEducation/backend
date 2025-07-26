@@ -13,7 +13,6 @@ export class LoginDto {
   @IsString({ message: 'Password must be a string.' })
   @IsNotEmpty({ message: 'Password cannot be empty.' })
   @MinLength(8, { message: 'Password must be at least 8 characters long.' })
-  @IsStrongPassword()
   @ApiProperty()
   password: string;
 }

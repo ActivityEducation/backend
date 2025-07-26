@@ -1,6 +1,6 @@
 // src/core/core.module.ts
 
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
 import { AppService } from './services/app.service';
@@ -18,6 +18,12 @@ import { BullModule } from '@nestjs/bullmq';
 import { JsonLDNamespaceController } from './controllers/namespace.controller';
 import { NodeInfoController } from './controllers/nodeinfo.controller';
 import { WellKnownController } from './controllers/well-known.controller';
+import { UserEntity } from 'src/features/auth/entities/user.entity';
+import { AnnounceEntity } from 'src/features/activitypub/entities/announce.entity';
+import { ProcessedActivityEntity } from 'src/features/activitypub/entities/processed-activity.entity';
+import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
+import { FlashcardModelEntity } from 'src/features/educationpub/entities/flashcard-model.entity';
+import { ActivityPubModule } from 'src/features/activitypub/activitypub.module';
 
 /**
  * CoreModule
@@ -56,9 +62,15 @@ import { WellKnownController } from './controllers/well-known.controller';
       ContentObjectEntity,
       LikeEntity,
       BlockEntity,
+      UserEntity,
+      AnnounceEntity,
+      FlashcardEntity,
+      FlashcardModelEntity,
+      ProcessedActivityEntity,
     ]), // Register entities for TypeORM
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
+    forwardRef(() => ActivityPubModule)
   ],
   controllers: [
     JsonLDNamespaceController,

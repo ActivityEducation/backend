@@ -1,207 +1,359 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm'; // For injecting TypeORM repositories
-import { Repository, IsNull } from 'typeorm'; // TypeORM Repository type and IsNull for soft delete checks
-import { Redis } from 'ioredis'; // Import Redis type
-import { LoggerService } from '../../shared/services/logger.service';
+// src/core/services/remote-object.service.ts
+
+import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { ActorEntity } from '../../features/activitypub/entities/actor.entity';
 import { ContentObjectEntity } from '../../features/activitypub/entities/content-object.entity';
+import { LoggerService } from '../../shared/services/logger.service';
+import { normalizeUrl } from '../../shared/utils/url-normalizer';
+import * as jsonld from 'jsonld'; // For JSON-LD canonicalization
+import { KeyManagementService } from '../../shared/services/key-management.service';
+import * as HttpSignature from '@peertube/http-signature'; // For HTTP Signature generation
+import { HttpService } from '@nestjs/axios';
 
 @Injectable()
 export class RemoteObjectService {
+  private readonly instanceBaseUrl: string;
+
   constructor(
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
+    @InjectRepository(ActorEntity)
+    private readonly actorRepository: Repository<ActorEntity>,
     @InjectRepository(ContentObjectEntity)
-    private readonly contentObjectRepository: Repository<ContentObjectEntity>, // Repository for ContentObjectEntity
-    private readonly logger: LoggerService, // Custom logger
-    @Inject('REDIS_CLIENT') private readonly redisClient: Redis, // Inject Redis client
+    private readonly contentObjectRepository: Repository<ContentObjectEntity>,
+    private readonly logger: LoggerService,
+    private readonly keyManagementService: KeyManagementService,
   ) {
-    this.logger.setContext('RemoteObjectService'); // Set context for the logger
+    this.logger.setContext('RemoteObjectService');
+    const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
+    if (!baseUrl) {
+      this.logger.error('INSTANCE_BASE_URL is not defined in environment variables.');
+      throw new Error('INSTANCE_BASE_URL is not defined.');
+    }
+    this.instanceBaseUrl = baseUrl;
   }
 
   /**
-   * Fetches a remote ActivityPub object by its ID (URI) from the network.
-   * Includes retry logic with exponential backoff and caching.
-   * This is used when an ActivityPub instance needs to retrieve content from another instance.
-   * @param objectId The ActivityPub URI of the remote object.
-   * @returns The fetched object's JSON-LD payload, or null if not found/resolvable.
+   * Fetches a remote ActivityPub object by its URI, with caching and retries.
+   * Handles content negotiation for ActivityPub+JSON.
+   *
+   * @param objectUri The URI of the remote ActivityPub object.
+   * @param retries Number of retry attempts for the request.
+   * @param delay Initial delay in milliseconds for exponential backoff.
+   * @returns The fetched ActivityPub object as a JSON-LD object.
+   * @throws NotFoundException if the object is not found or cannot be fetched.
+   * @throws InternalServerErrorException for other fetching errors.
    */
-  async fetchRemoteObject(objectId: string): Promise<any | null> {
-    this.logger.debug(`Attempting to fetch remote object: '${objectId}'.`);
+  async fetchRemoteObject(objectUri: string, retries: number = 3, delay: number = 1000): Promise<any> {
+    const normalizedUri = normalizeUrl(objectUri);
+    this.logger.debug(`Attempting to fetch remote object: ${normalizedUri}`);
 
-    // 1. Check local in-memory cache first to reduce network requests.
-    // NOTE: This in-memory cache is for demonstration. In production, use Redis.
-    // For this app, we're transitioning to Redis for all caching, so this can be removed later.
-    // For now, it's kept as a quick check before hitting Redis/DB for general objects.
-    // Public keys will use Redis directly.
-    // if (remoteObjectCache.has(objectId)) { // Removed in-memory cache
-    //   this.logger.debug(`Remote object for '${objectId}' found in in-memory cache.`);
-    //   return remoteObjectCache.get(objectId);
-    // }
-
-    // 2. Check local database: If it's an object that we've already stored (e.g., a local post,
-    // or a remote object we've previously fetched and stored), retrieve it from here.
-    const localContentObject = await this.contentObjectRepository.findOne({
-      where: { activityPubId: objectId, deletedAt: IsNull() }, // Ensure it's not soft-deleted
-    });
-    if (localContentObject) {
-      this.logger.debug(`Remote object for '${objectId}' found locally.`);
-      // remoteObjectCache.set(objectId, localContentObject.data); // Removed in-memory cache
-      return localContentObject.data;
-    }
-
-    // 3. For truly remote objects not found locally, attempt to fetch from the objectId URL with retry logic.
-    const MAX_RETRIES = 3;
-    let retries = 0;
-    while (retries < MAX_RETRIES) {
+    for (let i = 0; i < retries; i++) {
       try {
-        this.logger.log(`Fetching remote object from: '${objectId}' (Attempt ${retries + 1}/${MAX_RETRIES}).`);
-        const response = await fetch(objectId, {
-          headers: { Accept: 'application/activity+json, application/ld+json' }, // Request ActivityPub JSON-LD
-        });
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to fetch remote object '${objectId}': ${response.status} ${response.statusText} - ${errorText}`);
+        const response = await this.httpService.get(normalizedUri, {
+          headers: {
+            'Accept': 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+            'User-Agent': `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`,
+          },
+          timeout: 5000, // 5 seconds timeout
+        }).toPromise();
+
+        if (response?.status === 200) {
+          this.logger.log(`Successfully fetched remote object: ${normalizedUri}`);
+          return response?.data;
         }
-        const remoteObject = await response.json(); // Parse the response JSON
-        // remoteObjectCache.set(objectId, remoteObject); // Removed in-memory cache
-        this.logger.log(`Successfully fetched remote object: '${objectId}'.`);
-        return remoteObject;
       } catch (error) {
-        this.logger.error(`Error fetching remote object '${objectId}' (Attempt ${retries + 1}): ${error.message}.`, error.stack);
-        retries++;
-        if (retries < MAX_RETRIES) {
-          // Exponential backoff: wait longer with each retry (1s, 2s, 4s...)
-          await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries - 1)));
-        }
-      }
-    }
-    this.logger.error(`Failed to fetch remote object after ${MAX_RETRIES} attempts: '${objectId}'.`);
-    return null;
-  }
-
-  /**
-   * Fetches a remote ActivityPub object and stores it in the local database if not already present.
-   * This is particularly useful for objects referenced in incoming activities (e.g., `inReplyTo` objects
-   * in replies, or `object` of `Announce` activities) to build a local cache of federated content.
-   * @param objectId The ActivityPub URI of the remote object.
-   * @returns The stored ContentObjectEntity, or null if fetching/storing failed.
-   */
-  async fetchAndStoreRemoteObject(objectId: string): Promise<ContentObjectEntity | null> {
-    this.logger.debug(`Attempting to fetch and store remote object: '${objectId}'.`);
-
-    // First, check if it's already in our local ContentObjectEntity table to avoid redundant fetches/storage.
-    let localContentObject = await this.contentObjectRepository.findOne({
-      where: { activityPubId: objectId, deletedAt: IsNull() },
-    });
-
-    if (localContentObject) {
-      this.logger.debug(`Object '${objectId}' already exists locally. No need to fetch or store.`);
-      return localContentObject;
-    }
-
-    // If not local, fetch it remotely from the network.
-    const remoteObjectData = await this.fetchRemoteObject(objectId);
-
-    if (remoteObjectData) {
-      // Ensure the fetched object has an ID. Use the requested objectId as fallback if the remote object's ID is missing.
-      const canonicalId = remoteObjectData.id ? String(remoteObjectData.id) : objectId;
-
-      // Check again in case the remote object's canonical ID is different from the requested objectId
-      // and already exists locally (e.g., due to URI canonicalization differences).
-      localContentObject = await this.contentObjectRepository.findOne({
-        where: { activityPubId: canonicalId, deletedAt: IsNull() },
-      });
-
-      if (localContentObject) {
-        this.logger.debug(`Object '${canonicalId}' (from remote fetch) already exists locally. No need to store.`);
-        return localContentObject;
-      }
-
-      // Store the new remote object in our database.
-      const newContentObject = this.contentObjectRepository.create({
-        activityPubId: canonicalId,
-        type: remoteObjectData.type ? String(remoteObjectData.type) : 'Unknown', // Default type if not specified
-        attributedToActivityPubId: remoteObjectData.attributedTo ? String(remoteObjectData.attributedTo) : (remoteObjectData.actor ? String(remoteObjectData.actor) : 'unknown'), // Actor who created/attributed it
-        data: remoteObjectData, // Store the full JSON-LD payload
-      });
-      await this.contentObjectRepository.save(newContentObject);
-      this.logger.log(`Stored new remote content object (ID: '${newContentObject.activityPubId}', Type: '${newContentObject.type}').`);
-      return newContentObject;
-    }
-
-    this.logger.warn(`Could not fetch or store remote object: '${objectId}'.`);
-    return null;
-  }
-
-  /**
-   * Fetches a public key (PEM format) from a given keyId URI, with Redis caching.
-   * This method is crucial for verifying HTTP Signatures from remote instances.
-   * A keyId typically points to a 'publicKey' object embedded within an actor's profile.
-   * @param keyId The URI of the public key (e.g., 'https://mastodon.social/users/exampleuser#main-key').
-   * @returns The public key in PEM format as a string, or null if not found/resolvable.
-   */
-  async fetchPublicKey(keyId: string): Promise<string | null> {
-    this.logger.debug(`Attempting to fetch public key for keyId: '${keyId}'.`);
-
-    const cacheKey = `publicKey:${keyId}`;
-    const cachedKey = await this.redisClient.get(cacheKey);
-    if (cachedKey) {
-      this.logger.debug(`Public key for '${keyId}' found in Redis cache.`);
-      return cachedKey === 'null' ? null : cachedKey; // Handle cached 'null' string
-    }
-
-    const MAX_RETRIES = 3;
-    let retries = 0;
-    while (retries < MAX_RETRIES) {
-      try {
-        // The keyId often points to the actor's profile, with a fragment for the key.
-        // We need to fetch the actor's profile first.
-        const urlObj = new URL(keyId);
-        const actorUrl = urlObj.origin + urlObj.pathname; // Get the base actor URL without fragment
-
-        this.logger.log(`Fetching actor profile for public key discovery from: '${actorUrl}' (Attempt ${retries + 1}/${MAX_RETRIES}).`);
-        const response = await fetch(actorUrl, {
-          headers: { Accept: 'application/activity+json, application/ld+json' },
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to fetch actor profile '${actorUrl}' for keyId '${keyId}': ${response.status} ${response.statusText} - ${errorText}`);
-        }
-
-        const actorProfile = await response.json();
-
-        // Navigate the JSON-LD to find the public key
-        if (actorProfile.publicKey && actorProfile.publicKey.id === keyId && actorProfile.publicKey.publicKeyPem) {
-          const publicKeyPem = String(actorProfile.publicKey.publicKeyPem);
-          await this.redisClient.set(cacheKey, publicKeyPem, 'EX', 60 * 60 * 24); // Cache for 24 hours
-          this.logger.log(`Successfully fetched and cached public key for '${keyId}'.`);
-          return publicKeyPem;
+        this.logger.warn(`Attempt ${i + 1}/${retries} to fetch remote object ${normalizedUri} failed: ${error.message}`);
+        if (i < retries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i))); // Exponential backoff
         } else {
-          this.logger.warn(`Public key with ID '${keyId}' not found in actor profile '${actorUrl}'. Profile: ${JSON.stringify(actorProfile)}`);
-          // Attempt to find it in an array of public keys if present (less common but possible)
-          if (Array.isArray(actorProfile.publicKey)) {
-            const foundKey = actorProfile.publicKey.find((pk: any) => pk.id === keyId && pk.publicKeyPem);
-            if (foundKey) {
-              const publicKeyPem = String(foundKey.publicKeyPem);
-              await this.redisClient.set(cacheKey, publicKeyPem, 'EX', 60 * 60 * 24); // Cache for 24 hours
-              this.logger.log(`Successfully fetched and cached public key for '${keyId}' from array.`);
-              return publicKeyPem;
-            }
+          this.logger.error(`Failed to fetch remote object ${normalizedUri} after ${retries} attempts: ${error.message}`, error.stack);
+          if (error.response?.status === 404) {
+            throw new NotFoundException(`Remote object '${normalizedUri}' not found.`);
           }
-        }
-        this.logger.warn(`Public key for keyId '${keyId}' not found in fetched actor profile.`);
-        await this.redisClient.set(cacheKey, 'null', 'EX', 60 * 60); // Cache null for 1 hour
-        return null;
-
-      } catch (error) {
-        this.logger.error(`Error fetching public key for '${keyId}' (Attempt ${retries + 1}): ${error.message}.`, error.stack);
-        retries++;
-        if (retries < MAX_RETRIES) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries - 1)));
+          throw new InternalServerErrorException(`Failed to fetch remote object '${normalizedUri}'.`);
         }
       }
     }
-    this.logger.error(`Failed to fetch public key after ${MAX_RETRIES} attempts: '${keyId}'.`);
-    await this.redisClient.set(cacheKey, 'null', 'EX', 60 * 60); // Cache null even after retries fail
-    return null;
+    throw new InternalServerErrorException(`Failed to fetch remote object '${normalizedUri}' after multiple retries.`);
+  }
+
+  /**
+   * Fetches a remote ActivityPub object and stores it locally if it doesn't already exist.
+   * This is typically used for objects received in an inbox that we want to cache.
+   * Handles different object types (Actor, ContentObject).
+   *
+   * @param objectUri The URI of the remote ActivityPub object to fetch and store.
+   * @returns The locally stored ContentObjectEntity or ActorEntity, or null if the object could not be stored.
+   */
+  async fetchAndStoreRemoteObject(objectUri: string): Promise<ContentObjectEntity | ActorEntity | null> {
+    const normalizedUri = normalizeUrl(objectUri);
+    this.logger.debug(`Attempting to fetch and store remote object: ${normalizedUri}`);
+
+    // First, check if the object already exists locally
+    let existingObject: ContentObjectEntity | ActorEntity | null = null;
+    try {
+      existingObject = await this.contentObjectRepository.findOne({ where: { activityPubId: normalizedUri } });
+      if (!existingObject) {
+        existingObject = await this.actorRepository.findOne({ where: { activityPubId: normalizedUri } });
+      }
+    } catch (e) {
+      this.logger.error(`Error checking for existing remote object '${normalizedUri}': ${e.message}`, e.stack);
+      // Continue trying to fetch, but log the issue
+    }
+
+    if (existingObject) {
+      this.logger.debug(`Remote object '${normalizedUri}' already exists locally. Skipping fetch.`);
+      return existingObject;
+    }
+
+    try {
+      const remoteData = await this.fetchRemoteObject(normalizedUri);
+
+      if (remoteData) {
+        // Determine type and store accordingly
+        const type = Array.isArray(remoteData.type) ? remoteData.type[0] : remoteData.type;
+
+        if (type === 'Person' || type === 'Service' || type === 'Application' || type === 'Group') {
+          // It's an Actor
+          let actor = await this.actorRepository.findOne({ where: { activityPubId: normalizedUri } });
+          if (!actor) {
+            actor = this.actorRepository.create({
+              activityPubId: normalizedUri,
+              preferredUsername: remoteData.preferredUsername || new URL(normalizedUri).pathname.split('/').pop(),
+              name: remoteData.name || remoteData.preferredUsername || 'Unknown Remote Actor',
+              summary: remoteData.summary,
+              inbox: remoteData.inbox,
+              outbox: remoteData.outbox,
+              followersUrl: remoteData.followers,
+              followingUrl: remoteData.following,
+              likedUrl: remoteData.liked,
+              publicKeyPem: remoteData.publicKey?.publicKeyPem,
+              isLocal: false,
+              data: remoteData,
+            });
+            await this.actorRepository.save(actor);
+            this.logger.log(`Stored new remote actor: ${actor.activityPubId}`);
+          } else {
+            // Update existing actor if necessary (e.g., profile changes)
+            actor.name = remoteData.name || actor.name;
+            actor.summary = remoteData.summary || actor.summary;
+            actor.inbox = remoteData.inbox || actor.inbox;
+            actor.outbox = remoteData.outbox || actor.outbox;
+            actor.followersUrl = remoteData.followers || actor.followersUrl;
+            actor.followingUrl = remoteData.following || actor.followingUrl;
+            actor.likedUrl = remoteData.liked || actor.likedUrl;
+            actor.publicKeyPem = remoteData.publicKey?.publicKeyPem || actor.publicKeyPem;
+            actor.data = remoteData; // Update full payload
+            await this.actorRepository.save(actor);
+            this.logger.log(`Updated existing remote actor: ${actor.activityPubId}`);
+          }
+          return actor;
+        } else {
+          // It's a generic ContentObject (Note, Image, edu:Flashcard, etc.)
+          let contentObject = await this.contentObjectRepository.findOne({ where: { activityPubId: normalizedUri } });
+          if (!contentObject) {
+            contentObject = this.contentObjectRepository.create({
+              activityPubId: normalizedUri,
+              type: type,
+              attributedToActivityPubId: remoteData.attributedTo,
+              inReplyToActivityPubId: remoteData.inReplyTo,
+              activityPubUpdatedAt: remoteData.updated ? new Date(remoteData.updated) : undefined, // Assign undefined instead of null
+              data: remoteData,
+            });
+            await this.contentObjectRepository.save(contentObject);
+            this.logger.log(`Stored new remote content object: ${contentObject.activityPubId} (${type})`);
+          } else {
+            // Update existing content object if necessary (e.g., content changes)
+            contentObject.data = remoteData; // Update full payload
+            contentObject.activityPubUpdatedAt = remoteData.updated ? new Date(remoteData.updated) : contentObject.activityPubUpdatedAt; // Update timestamp if present
+            await this.contentObjectRepository.save(contentObject);
+            this.logger.log(`Updated existing remote content object: ${contentObject.activityPubId} (${type})`);
+          }
+          return contentObject;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Failed to fetch and store remote object '${normalizedUri}': ${error.message}`, error.stack);
+      if (error instanceof NotFoundException || error instanceof InternalServerErrorException) {
+        throw error;
+      }
+      return null;
+    }
+    return null; // Should ideally not be reached
+  }
+
+  /**
+   * Fetches the followers collection for a given remote actor URI.
+   *
+   * @param actorFollowersUri The URI of the actor's followers collection.
+   * @param page The page number to fetch (for pagination).
+   * @param perPage The number of items per page.
+   * @returns The ActivityPub OrderedCollectionPage for followers.
+   */
+  async getActorFollowers(actorFollowersUri: string, page: number = 1, perPage: number = 10): Promise<any> {
+    this.logger.debug(`Fetching followers for: ${actorFollowersUri}, page: ${page}, perPage: ${perPage}`);
+    try {
+      // Append pagination query parameters
+      const url = new URL(actorFollowersUri);
+      url.searchParams.set('page', String(page));
+      url.searchParams.set('limit', String(perPage)); // Mastodon typically uses 'limit'
+
+      const response = await this.httpService.get(url.toString(), {
+        headers: {
+          'Accept': 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+          'User-Agent': `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`,
+        },
+        timeout: 5000,
+      }).toPromise();
+      this.logger.log(`Successfully fetched followers from ${actorFollowersUri}.`);
+      return response?.data;
+    } catch (error) {
+      this.logger.error(`Failed to fetch followers from ${actorFollowersUri}: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to fetch followers: ${error.message}`);
+    }
+  }
+
+  /**
+   * Fetches the inbox collection for a given remote actor URI.
+   * NOTE: Access to remote inboxes is typically restricted and requires authentication/authorization.
+   * This method is primarily for internal system use or highly privileged federation scenarios.
+   *
+   * @param actorInboxUri The URI of the actor's inbox collection.
+   * @param page The page number to fetch (for pagination).
+   * @param perPage The number of items per page.
+   * @returns The ActivityPub OrderedCollectionPage for inbox activities.
+   */
+  async getActorInbox(actorInboxUri: string, page: number = 1, perPage: number = 10): Promise<any> {
+    this.logger.debug(`Fetching inbox for: ${actorInboxUri}, page: ${page}, perPage: ${perPage}`);
+    try {
+      const url = new URL(actorInboxUri);
+      url.searchParams.set('page', String(page));
+      url.searchParams.set('limit', String(perPage));
+
+      const response = await this.httpService.get(url.toString(), {
+        headers: {
+          'Accept': 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+          'User-Agent': `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`,
+        },
+        timeout: 5000,
+      }).toPromise();
+      this.logger.log(`Successfully fetched inbox from ${actorInboxUri}.`);
+      return response?.data;
+    } catch (error) {
+      this.logger.error(`Failed to fetch inbox from ${actorInboxUri}: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to fetch inbox: ${error.message}`);
+    }
+  }
+
+  /**
+   * Posts a signed ActivityPub activity to a target URI (e.g., a remote actor's inbox).
+   * This method performs JSON-LD canonicalization and HTTP Signature generation.
+   *
+   * @param actorId The internal database ID of the local actor sending the activity.
+   * @param targetUrl The URL to post the signed activity to (e.g., remote inbox).
+   * @param activity The ActivityPub payload (JSON-LD object) to send.
+   * @param retries Number of retry attempts for the request.
+   * @param delay Initial delay in milliseconds for exponential backoff.
+   * @returns The response from the remote server.
+   * @throws InternalServerErrorException if signing or dispatch fails.
+   */
+  async postSignedActivity(
+    actorId: string,
+    targetUrl: string,
+    activity: any,
+    retries: number = 3,
+    delay: number = 1000,
+  ): Promise<any> {
+    this.logger.log(`Attempting to post signed activity to ${targetUrl} from actor ID: ${actorId}`);
+
+    const localActor = await this.actorRepository.findOne({ where: { id: actorId } });
+    if (!localActor) {
+      throw new NotFoundException(`Local actor with ID '${actorId}' not found for signing.`);
+    }
+    if (!localActor.privateKeyPem) {
+      this.logger.warn(`Actor '${localActor.preferredUsername}' has no private key PEM for signing.`);
+      throw new InternalServerErrorException(`Private key not configured for actor '${localActor.preferredUsername}'.`);
+    }
+
+    // Canonicalize the JSON-LD payload for consistent digest and signature generation
+    let canonicalizedActivity: string;
+    try {
+      canonicalizedActivity = await jsonld.canonize(activity, { algorithm: 'URDNA2015', format: 'application/n-quads' });
+      this.logger.debug(`Canonicalized Activity: ${canonicalizedActivity}`);
+    } catch (canonicalizationError) {
+      this.logger.error(`Failed to canonicalize activity for signing: ${canonicalizationError.message}`, canonicalizationError.stack);
+      throw new InternalServerErrorException(`Failed to canonicalize activity: ${canonicalizationError.message}`);
+    }
+
+    const activityBuffer = Buffer.from(JSON.stringify(activity), 'utf8');
+
+    for (let i = 0; i < retries; i++) {
+      try {
+        const date = new Date().toUTCString();
+        // Generate Digest header (SHA-256 of the raw JSON body)
+        const digest = HttpSignature.generateDigest(activityBuffer.toString('utf8')); // Expects string for digest calc
+
+        const requestConfig = {
+          url: new URL(targetUrl).pathname, // Pathname for (request-target)
+          method: 'POST',
+          headers: {
+            'Host': new URL(targetUrl).hostname,
+            'Date': date,
+            'Content-Type': 'application/activity+json',
+            'Digest': `SHA-256=${digest}`,
+            'User-Agent': `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`,
+          },
+          body: activityBuffer.toString('utf8'), // Body for signing, must be string
+        };
+
+        const signatureHeaders = ['(request-target)', 'host', 'date', 'digest'];
+
+        // Sign the request
+        const signedRequest = HttpSignature.sign(requestConfig, {
+          key: localActor.privateKeyPem,
+          keyId: `${localActor.activityPubId}#main-key`, // Standard ActivityPub keyId format
+          algorithm: 'rsa-sha256',
+          headers: signatureHeaders,
+        });
+
+        // Add the generated Signature header to the headers for the actual HTTP request
+        const finalHeaders = {
+          ...requestConfig.headers,
+          'Signature': signedRequest.headers.signature, // Use the signature generated by the library
+        };
+
+        this.logger.debug(`Dispatching signed activity to ${targetUrl} with headers: ${JSON.stringify(finalHeaders)}`);
+
+        // Perform the HTTP POST request
+        const response = await this.httpService.post(targetUrl, activity, {
+          headers: finalHeaders,
+          timeout: 10000, // 10 seconds timeout for network requests
+        }).toPromise();
+
+        this.logger.log(`Successfully dispatched signed activity to ${targetUrl}. Status: ${response?.status}`);
+        return response?.data;
+      } catch (error) {
+        this.logger.warn(`Attempt ${i + 1}/${retries} to post signed activity to ${targetUrl} failed: ${error.message}`);
+        this.logger.debug(`Error response from ${targetUrl}: ${JSON.stringify(error.response?.data)}`);
+
+        if (error.response?.status && error.response.status >= 400 && error.response.status < 500) {
+          // Do not retry on 4xx errors (client errors)
+          this.logger.error(`Client error (${error.response.status}) when posting signed activity to ${targetUrl}. No retry.`);
+          throw new InternalServerErrorException(`Failed to dispatch activity due to client error: ${error.response.status} - ${error.message}`);
+        }
+
+        if (i < retries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i))); // Exponential backoff
+        } else {
+          this.logger.error(`Failed to post signed activity to ${targetUrl} after ${retries} attempts: ${error.message}`, error.stack);
+          throw new InternalServerErrorException(`Failed to post signed activity to ${targetUrl} after all attempts.`);
+        }
+      }
+    }
+    throw new InternalServerErrorException(`Failed to post signed activity to ${targetUrl} after all attempts.`);
   }
 }

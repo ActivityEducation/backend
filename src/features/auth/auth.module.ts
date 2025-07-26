@@ -12,6 +12,8 @@ import { ActorEntity } from '../activitypub/entities/actor.entity'; // Path upda
 import { CommonModule } from '../../shared/common.module'; // Import CommonModule for shared services like
 import { CoreModule } from 'src/core/core.module';
 import { ModerationModule } from '../moderation/moderation.module';
+import { UserEntity } from './entities/user.entity';
+import { ActivityPubModule } from '../activitypub/activitypub.module';
 
 /**
  * AuthModule
@@ -42,9 +44,11 @@ import { ModerationModule } from '../moderation/moderation.module';
   imports: [
     forwardRef(() => CoreModule), // Use forwardRef if this module is imported in a circular dependency scenario
     forwardRef(() => ModerationModule), 
+    forwardRef(() => ActivityPubModule),
     // Register ActorEntity with TypeORM for use in AuthService
     TypeOrmModule.forFeature([
       ActorEntity,
+      UserEntity
     ]),
     PassportModule, // Initialize Passport module
     // Configure JwtModule asynchronously to load JWT secret from ConfigService

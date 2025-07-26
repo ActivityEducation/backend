@@ -1,3 +1,6 @@
+// src/features/educationpub/controllers/flashcard.controller.ts
+// Updated to use FlashcardEntity and FlashcardService, and new endpoints
+
 import {
   Controller,
   Post,
@@ -6,15 +9,17 @@ import {
   NotFoundException,
   HttpCode,
   HttpStatus,
-  InternalServerErrorException,
   UseInterceptors,
   ClassSerializerInterceptor,
+  Body,
+  UseGuards,
+  Query,
+  DefaultValuePipe,
+  ParseIntPipe,
+  Put,
+  Delete,
+  ConflictException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
-import { Queue } from 'bullmq';
-import { InjectQueue } from '@nestjs/bullmq';
-import { randomUUID } from 'crypto';
 import {
   ApiBody,
   ApiOkResponse,
@@ -22,342 +27,184 @@ import {
   ApiParam,
   ApiResponse,
   ApiTags,
-} from '@nestjs/swagger'; // Import Swagger decorators
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 
-import { Activity } from 'src/shared/decorators/activity.decorator';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
-import { ContentObjectEntity } from 'src/features/activitypub/entities/content-object.entity';
-import { AppService } from 'src/core/services/app.service';
 import { LoggerService } from 'src/shared/services/logger.service';
-import { ConfigService } from '@nestjs/config';
-import { ActivityEntity } from 'src/features/activitypub/entities/activity.entity';
 import { CreateFlashcardPayload } from '../dto/create-fashcard.dto';
-import { Flashcard } from '../views/flashcard.view';
+import { FlashcardEntity } from '../entities/flashcard.entity';
+import { FlashcardService } from '../services/flashcard.service';
+import { User } from 'src/shared/decorators/user.decorator';
+import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
+import { UpdateFlashcardDto } from '../dto/update-flashcard.dto';
+import { Flashcard as FlashcardView } from '../views/flashcard.view'; // Renamed import to avoid conflict
+import { Repository } from 'typeorm'; // Import Repository
+import { InjectRepository } from '@nestjs/typeorm'; // Import InjectRepository
 
-@ApiTags('EducationPub') // Tag for Swagger UI organization
+@ApiTags('EducationPub - Flashcards')
 @Controller('edu/flashcards')
+@ApiBearerAuth('JWT-auth') // Apply JWT authentication to all routes in this controller that require it
+@UseInterceptors(ClassSerializerInterceptor) // Apply serializer globally to this controller
 export class EducationPubController {
-  private readonly instanceBaseUrl: string;
-
   constructor(
-    @InjectRepository(Flashcard)
-    private readonly flashcardRepository: Repository<Flashcard>,
-    @InjectRepository(ActorEntity)
+    private readonly flashcardService: FlashcardService, // Inject FlashcardService
+    private readonly logger: LoggerService, // Inject LoggerService
+    @InjectRepository(ActorEntity) // Still need ActorEntity directly for username validation
     private readonly actorRepository: Repository<ActorEntity>,
-    @InjectRepository(ContentObjectEntity)
-    private readonly contentObjectRepository: Repository<ContentObjectEntity>,
-    @InjectRepository(ActivityEntity)
-    private readonly activityRepository: Repository<ActivityEntity>,
-    @InjectQueue('outbox') private outboxQueue: Queue,
-    private readonly configService: ConfigService,
-    private readonly logger: LoggerService,
   ) {
     this.logger.setContext('EducationPubController');
-    const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
-    if (!baseUrl) {
-      this.logger.error(
-        'INSTANCE_BASE_URL is not defined in environment variables.',
-      );
-      throw new Error('INSTANCE_BASE_URL is not defined.');
-    }
-    this.instanceBaseUrl = baseUrl;
   }
 
   @Get()
-  @UseInterceptors(ClassSerializerInterceptor)
-  @ApiOkResponse({ type: [Flashcard] })
-  public getFlashcards() {
-    return this.flashcardRepository.find();
+  @UseGuards(JwtAuthGuard) // Protect this route if it should only show user's flashcards
+  @ApiOperation({ summary: 'Retrieve all flashcards (paginated)' })
+  @ApiOkResponse({ type: [FlashcardView], description: 'Successfully retrieved a paginated list of flashcards.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async getFlashcards(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
+  ): Promise<{ data: FlashcardEntity[]; total: number; page: number; limit: number }> {
+    this.logger.log(`Fetching all flashcards, page: ${page}, limit: ${limit}`);
+    const [flashcards, total] = await this.flashcardService.findAllFlashcardsPaginated(page, limit);
+
+    return {
+      data: flashcards,
+      total,
+      page,
+      limit,
+    };
+  }
+
+  @Get(':id')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Retrieve a flashcard by ID' })
+  @ApiParam({ name: 'id', description: 'The UUID of the flashcard.' })
+  @ApiResponse({ status: 200, description: 'Successfully retrieved the flashcard.', type: FlashcardView })
+  @ApiResponse({ status: 404, description: 'Flashcard not found.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async getFlashcardById(@Param('id') id: string): Promise<FlashcardEntity> {
+    this.logger.log(`Fetching flashcard with ID: ${id}`);
+    return this.flashcardService.findFlashcardById(id);
   }
 
   /**
    * Creates a new EducationPub Flashcard for a specified user.
    * Saves the flashcard to the database and sends a 'Create' activity to the Fediverse.
    *
-   * @param username The preferred username of the actor creating the flashcard.
-   * @param flashcardPayload The incoming flashcard data (parsed by @Activity() decorator).
-   * @returns The created flashcard object with its ActivityPub ID.
+   * @param username The preferred username of the actor creating the flashcard. Must match authenticated user.
+   * @param localActorId The internal DB ID of the authenticated actor.
+   * @param createFlashcardPayload The incoming flashcard data.
+   * @param isPublicQuery Optional query param to force public status (primarily for testing/dev ease).
+   * @returns The created flashcard object.
    */
   @Post(':username')
   @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard) // Require JWT authentication
   @ApiOperation({ summary: 'Create a new EducationPub Flashcard for a user' })
   @ApiParam({
     name: 'username',
-    description: 'The preferred username of the actor creating the flashcard.',
+    description: 'The preferred username of the actor creating the flashcard. Must match authenticated user.',
   })
   @ApiBody({
     type: CreateFlashcardPayload,
-    description:
-      'The JSON-LD payload for the new flashcard. Ensure @context and @type are correctly set.',
-    examples: {
-      aFlashcard: {
-        value: {
-          '@context': [
-            'https://www.w3.org/ns/activitystreams',
-            'https://social.bleauweb.org/ns/education-pub',
-          ],
-          id: `http://localhost/objects/${randomUUID()}`,
-          type: ['edu:Flashcard', 'Note'],
-          name: 'My First French Word',
-          'edu:model':
-            'https://social.bleauweb.org/flashcard-models/basic-vocab',
-          'edu:fieldsData': {
-            Front: 'Bonjour',
-            Back: 'Hello',
-            'Example Sentence': 'Bonjour, comment ça va?',
-          },
-          'edu:tags': ['French', 'Greetings'],
-          'edu:targetLanguage': 'fr',
-          'edu:sourceLanguage': 'en',
-        },
-        summary: 'Example Flashcard Creation',
-      },
-    },
+    description: 'The payload for the new flashcard.',
   })
   @ApiResponse({
     status: 201,
-    description: 'Flashcard created and enqueued for Fediverse delivery.',
+    description: 'Flashcard created and enqueued for Fediverse delivery if public.',
+    type: FlashcardView,
   })
   @ApiResponse({
     status: 400,
-    description: 'Bad Request (e.g., invalid JSON-LD payload).',
+    description: 'Bad Request (e.g., invalid payload, missing model).',
   })
-  @ApiResponse({ status: 404, description: 'Actor not found.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden (username mismatch).' })
+  @ApiResponse({ status: 404, description: 'Actor or Flashcard Model not found.' })
   @ApiResponse({ status: 500, description: 'Internal server error.' })
   async createFlashcard(
     @Param('username') username: string,
-    @Activity() flashcardPayload: any, // Changed type to 'any' to bypass ValidationPipe for raw JSON-LD
-  ): Promise<any> {
-    this.logger.log(
-      `Received request to create flashcard for user: ${username}`,
-    );
+    @User('actor.activityPubId') localActorId: string, // Get authenticated user's internal ID
+    @Body() createFlashcardPayload: CreateFlashcardPayload,
+    @Query('isPublic', new DefaultValuePipe(false)) isPublicQuery: boolean, // Allow overriding for testing
+  ): Promise<FlashcardEntity> {
+    this.logger.log(`Received request to create flashcard for user: ${username}, authenticated as actor ID: ${localActorId}`);
 
-    const actor = await this.actorRepository.findOne({
-      where: { preferredUsername: username },
-    });
-
-    if (!actor) {
-      throw new NotFoundException(
-        `Actor with username '${username}' not found.`,
-      );
+    const actor = await this.actorRepository.findOne({ where: { id: localActorId } });
+    if (!actor || actor.preferredUsername !== username) {
+      throw new NotFoundException(`Actor '${username}' not found or you are not authorized to create content for this user.`);
     }
 
-    const flashcardActivityPubId = flashcardPayload.id ?? `${this.instanceBaseUrl}/objects/${randomUUID()}`;
-
-    const newFlashcard = new ContentObjectEntity();
-    newFlashcard.activityPubId = flashcardActivityPubId;
-    newFlashcard.type = 'Flashcard';
-    newFlashcard.attributedToActivityPubId = actor.activityPubId;
-
-    const flashcardName = flashcardPayload.name || 'Untitled Flashcard';
-    const flashcardFields = flashcardPayload.eduFieldsData || {};
-
-    const flashcardContent =
-      `Flashcard: ${flashcardName}\n\n` +
-      Object.entries(flashcardFields)
-        .map(([key, value]) => `${key}: ${value}`)
-        .join('\n');
-
-    newFlashcard.data = {
-      '@context': [
-        'https://www.w3.org/ns/activitystreams',
-        'https://social.bleauweb.org/ns/education-pub',
-        'https://w3id.org/security/v1',
-      ],
-      '@type': ['edu:Flashcard', 'Note'],
-      id: flashcardActivityPubId,
-      attributedTo: actor.activityPubId,
-      published: new Date().toISOString(),
-      content: flashcardContent,
-      ...flashcardPayload,
-    };
-
-    try {
-      const savedFlashcard =
-        await this.contentObjectRepository.save(newFlashcard);
-      this.logger.log(`Flashcard saved to DB: ${savedFlashcard.activityPubId}`);
-
-      const activityUUID = randomUUID();
-      const createActivityId = `${this.instanceBaseUrl}/activities/${activityUUID}`;
-      const createActivityPayload = {
-        // Renamed to avoid conflict with ActivityEntity instance
-        '@context': [
-          'https://www.w3.org/ns/activitystreams',
-          'https://social.bleauweb.org/ns/education-pub',
-          'https://w3id.org/security/v1',
-        ],
-        id: createActivityId,
-        type: 'Create',
-        actor: actor.activityPubId,
-        object: savedFlashcard.activityPubId,
-        to: ['https://www.w3.org/ns/activitystreams#Public'],
-        published: new Date().toISOString(),
-      };
-
-      // NEW: Save the Create activity to the database
-      const newActivityEntity = this.activityRepository.create({
-        id: activityUUID,
-        activityPubId: createActivityPayload.id,
-        type: createActivityPayload.type,
-        actorActivityPubId: createActivityPayload.actor,
-        objectActivityPubId: createActivityPayload.object,
-        data: createActivityPayload,
-        actor: actor, // Link to the local actor entity
-      });
-      const savedActivity =
-        await this.activityRepository.save(newActivityEntity);
-      this.logger.log(
-        `Create Activity saved to DB: ${savedActivity.activityPubId}`,
-      );
-
-      // Enqueue the 'Create' activity to the outbox for delivery
-      await this.outboxQueue.add(
-        'deliver-activity',
-        {
-          activityId: savedActivity.id, // IMPORTANT: Pass the internal ID of the saved ActivityEntity
-          activity: savedActivity.data, // Pass the full JSON-LD payload from the saved entity
-          actorId: actor.id,
-        },
-        {
-          jobId: savedActivity.id, // Use the internal ID of the saved activity as job ID for traceability
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1000 },
-        },
-      );
-      this.logger.log(
-        `'Create' activity enqueued for flashcard: ${savedFlashcard.activityPubId}`,
-      );
-
-      return {
-        message: 'Flashcard created and enqueued for Fediverse delivery.',
-        flashcard: savedFlashcard.data,
-        activity: savedActivity.data, // Optionally return the created activity data
-      };
-    } catch (error) {
-      this.logger.error(
-        `Error creating flashcard: ${error.message}`,
-        error.stack,
-      );
-      throw new InternalServerErrorException(
-        'Failed to create flashcard and send activity.',
-      );
-    }
+    // Delegate to FlashcardService
+    return this.flashcardService.createFlashcard(localActorId, createFlashcardPayload, isPublicQuery);
   }
 
-  /**
-   * Deletes all EducationPub Flashcards for a specified user.
-   * Sends a 'Delete' activity for each deleted flashcard to the Fediverse.
-   *
-   * NOTE: As per request, this is a GET endpoint. In a RESTful API, a DELETE method
-   * would typically be used for this operation.
-   *
-   * @param username The preferred username of the actor whose flashcards are to be deleted.
-   * @returns A confirmation message with the count of deleted flashcards.
-   */
-  @Get('delete-all/:username')
+  @Put(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Delete all EducationPub Flashcards for a user' })
-  @ApiParam({
-    name: 'username',
-    description:
-      'The preferred username of the actor whose flashcards are to be deleted.',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Flashcards deleted and delete activities enqueued.',
-  })
-  @ApiResponse({ status: 404, description: 'Actor not found.' })
-  @ApiResponse({ status: 500, description: 'Internal server error.' })
-  async deleteAllFlashcards(@Param('username') username: string): Promise<any> {
-    this.logger.log(
-      `Received request to delete all flashcards for user: ${username}`,
-    );
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Update an existing flashcard by ID' })
+  @ApiParam({ name: 'id', description: 'The UUID of the flashcard to update.' })
+  @ApiBody({ type: UpdateFlashcardDto })
+  @ApiResponse({ status: 200, description: 'Flashcard updated successfully.', type: FlashcardView })
+  @ApiResponse({ status: 404, description: 'Flashcard not found or unauthorized.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async updateFlashcard(
+    @Param('id') id: string,
+    @User('actor.activityPubId') localActorId: string,
+    @Body() updateFlashcardDto: UpdateFlashcardDto,
+  ): Promise<FlashcardEntity> {
+    this.logger.log(`Received request to update flashcard ID: ${id} by actor ID: ${localActorId}`);
+    return this.flashcardService.updateFlashcard(id, localActorId, updateFlashcardDto);
+  }
 
-    const actor = await this.actorRepository.findOne({
-      where: { preferredUsername: username },
-    });
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Delete a flashcard by ID' })
+  @ApiParam({ name: 'id', description: 'The UUID of the flashcard to delete.' })
+  @ApiResponse({ status: 204, description: 'Flashcard deleted successfully.' })
+  @ApiResponse({ status: 404, description: 'Flashcard not found or unauthorized.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async deleteFlashcard(
+    @Param('id') id: string,
+    @User('actor.activityPubId') localActorId: string,
+  ): Promise<void> {
+    this.logger.log(`Received request to delete flashcard ID: ${id} by actor ID: ${localActorId}`);
+    await this.flashcardService.deleteFlashcard(id, localActorId);
+  }
 
-    if (!actor) {
-      throw new NotFoundException(
-        `Actor with username '${username}' not found.`,
-      );
-    }
+  @Post(':id/like')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Like a flashcard and enqueue Like activity' })
+  @ApiParam({ name: 'id', description: 'The ID of the flashcard to like.' })
+  @ApiResponse({ status: 202, description: 'Like activity enqueued for dispatch.' })
+  @ApiResponse({ status: 404, description: 'Flashcard or Actor not found.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 409, description: 'Conflict (already liked).' })
+  async likeFlashcard(
+    @Param('id') id: string,
+    @User('actor.activityPubId') localActorId: string,
+  ): Promise<{ message: string; liked: boolean }> {
+    this.logger.log(`Actor ID '${localActorId}' attempting to like flashcard ID: ${id}`);
+    return this.flashcardService.handleFlashcardLike(id, localActorId);
+  }
 
-    const flashcardsToDelete = await this.contentObjectRepository.find({
-      where: {
-        attributedToActivityPubId: actor.activityPubId,
-        type: 'Flashcard',
-        deletedAt: IsNull(),
-      },
-    });
-
-    if (flashcardsToDelete.length === 0) {
-      this.logger.log(`No flashcards found to delete for user: ${username}`);
-      return {
-        message: `No flashcards found for user '${username}' to delete.`,
-      };
-    }
-
-    let deletedCount = 0;
-    const deletePromises: Promise<any>[] = [];
-
-    for (const flashcard of flashcardsToDelete) {
-      deletePromises.push(
-        (async () => {
-          try {
-            flashcard.deletedAt = new Date();
-            await this.contentObjectRepository.save(flashcard);
-            this.logger.log(
-              `Flashcard soft-deleted from DB: ${flashcard.activityPubId}`,
-            );
-
-            const deleteActivityId = `${this.instanceBaseUrl}/activities/${randomUUID()}`;
-            const deleteActivity = {
-              '@context': [
-                'https://www.w3.org/ns/activitystreams',
-                'https://social.bleauweb.org/ns/education-pub',
-                'https://w3id.org/security/v1',
-              ],
-              id: deleteActivityId,
-              type: 'Delete',
-              actor: actor.activityPubId,
-              object: flashcard.activityPubId,
-              to: ['https://www.w3.org/ns/activitystreams#Public'],
-              published: new Date().toISOString(),
-            };
-
-            await this.outboxQueue.add(
-              'deliver-activity',
-              {
-                activityId: null,
-                activity: deleteActivity,
-                actorId: actor.id,
-              },
-              {
-                jobId: deleteActivityId,
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 1000 },
-              },
-            );
-            this.logger.log(
-              `'Delete' activity enqueued for flashcard: ${flashcard.activityPubId}`,
-            );
-            deletedCount++;
-          } catch (error) {
-            this.logger.error(
-              `Error processing deletion for flashcard ${flashcard.activityPubId}: ${error.message}`,
-              error.stack,
-            );
-          }
-        })(),
-      );
-    }
-
-    await Promise.allSettled(deletePromises);
-
-    return {
-      message: `Attempted to delete ${deletedCount} flashcards for user '${username}' and enqueued delete activities.`,
-      deletedCount: deletedCount,
-    };
+  @Post(':id/boost')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Boost (Announce) a flashcard and enqueue Announce activity' })
+  @ApiParam({ name: 'id', description: 'The ID of the flashcard to boost.' })
+  @ApiResponse({ status: 202, description: 'Announce activity enqueued for dispatch.' })
+  @ApiResponse({ status: 404, description: 'Flashcard or Actor not found.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 409, description: 'Conflict (already boosted).' })
+  async boostFlashcard(
+    @Param('id') id: string,
+    @User('actor.activityPubId') localActorId: string,
+  ): Promise<{ message: string; boosted: boolean }> {
+    this.logger.log(`Actor ID '${localActorId}' attempting to boost flashcard ID: ${id}`);
+    return this.flashcardService.handleFlashcardBoost(id, localActorId);
   }
 }

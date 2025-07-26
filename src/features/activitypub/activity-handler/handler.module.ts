@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { HandlerDiscoveryService } from './handler-discovery.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -22,10 +22,12 @@ import { AcceptHandler } from './handlers/accept.handler';
 import { RejectHandler } from './handlers/reject.handler';
 import { ModerationModule } from 'src/features/moderation/moderation.module';
 import { UndoHandler } from './handlers/undo.handler';
+import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
+import { EducationPubModule } from 'src/features/educationpub/educationpub.module';
 
 @Module({
   imports: [
-    CoreModule,
+    // CoreModule,
     ModerationModule,
     TypeOrmModule.forFeature([
       ActorEntity,
@@ -34,7 +36,10 @@ import { UndoHandler } from './handlers/undo.handler';
       ContentObjectEntity,
       LikeEntity,
       BlockEntity,
+      FlashcardEntity,
     ]),
+    forwardRef(() => CoreModule),
+    forwardRef(() => EducationPubModule),
     DiscoveryModule,
   ],
   providers: [
