@@ -22,8 +22,11 @@ import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { ActorEntity } from '../entities/actor.entity';
 import { Request } from 'express';
+import { ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 
-@Controller()
+
+@ApiTags('ActivityPub')
+@Controller('api')
 export class ActivityPubController {
   constructor(
     private readonly appService: AppService,
@@ -175,7 +178,26 @@ export class ActivityPubController {
     return this.appService.getLikedCollection(username, page, perPage);
   }
 
-  // Content object endpoint: GET /api/objects/:id(*)
+  // NEW: Created Flashcards Collection endpoint
+  @Get('actors/:username/flashcards')
+  @Header('Content-Type', 'application/activity+json')
+  @UseGuards(RateLimitGuard) // Apply rate limiting
+  @ApiOperation({ summary: 'Retrieve a paginated collection of flashcards created by an actor' })
+  @ApiParam({ name: 'username', description: 'The preferred username of the actor.' })
+  @ApiQuery({ name: 'page', description: 'Page number', required: false, example: 1 })
+  @ApiQuery({ name: 'perPage', description: 'Items per page', required: false, example: 10 })
+  @ApiResponse({ status: 200, description: 'Successfully retrieved the actor\'s flashcard collection.' })
+  @ApiResponse({ status: 404, description: 'Actor not found.' })
+  async createdFlashcardsCollection(
+      @Param('username') username: string,
+      @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+      @Query('perPage', new DefaultValuePipe(10), ParseIntPipe) perPage: number,
+  ) {
+      this.logger.log(`Fetching created flashcards for '${username}'. Page: ${page}, PerPage: ${perPage}.`);
+      return this.appService.getCreatedFlashcardsCollection(username, page, perPage);
+  }
+
+  // Content object endpoint: GET /api/activities/:id
   @Get('activities/:id') // Captures the unique ID part of the ActivityPub URI
   @Header('Content-Type', 'application/activity+json') // Standard content type for ActivityPub objects
   @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse

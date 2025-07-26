@@ -19,6 +19,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { RemoteObjectService } from './remote-object.service';
 import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
+import { FlashcardModelEntity } from 'src/features/educationpub/entities/flashcard-model.entity'; // NEW: Import FlashcardModelEntity
 import { URL } from 'url';
 import { randomUUID } from 'crypto';
 import { ActorService } from 'src/features/activitypub/services/actor.service';
@@ -51,6 +52,8 @@ export class AppService {
     private likeRepository: Repository<LikeEntity>,
     @InjectRepository(FlashcardEntity)
     private flashcardRepository: Repository<FlashcardEntity>, // Inject FlashcardEntity
+    @InjectRepository(FlashcardModelEntity) // NEW: Inject FlashcardModelRepository
+    private readonly flashcardModelRepository: Repository<FlashcardModelEntity>,
     @InjectQueue('inbox') private inboxQueue: Queue,
     @InjectQueue('outbox') private outboxQueue: Queue,
     private readonly configService: ConfigService,
@@ -276,7 +279,6 @@ export class AppService {
     });
     const savedActivity = await this.activityRepository.save(newActivityEntity);
 
-    // Enqueue the activity for processing by the OutboxProcessor
     await this.outboxQueue.add(
       'deliver-activity',
       {
@@ -322,7 +324,7 @@ export class AppService {
     // TODO: Determine the appropriate local actor(s) to route this activity to.
     // For a shared inbox, this typically means sending to all followers' inboxes,
     // but might also involve saving relevant public content locally.
-    // For MVP, we might just enqueue it without a specific local actor recipient,
+    // For now, we might just enqueue it without a specific local actor recipient,
     // or route to a "default" local actor's inbox if needed.
     // For now, let's process it similarly to a direct inbox post but without a specific localActorId.
 
@@ -520,7 +522,7 @@ export class AppService {
       // This is a simplification for MVP, a real inbox might need more complex recipient filtering.
       // The `InboxProcessor` currently processes activities *for* a `localActorId`.
       // So, here we would query `ActivityEntity` where `localActorId` matches `actor.id`.
-      where: { actorActivityPubId: normalizeUrl(actor.activityPubId) }, // Assuming `localActorId` is stored on ActivityEntity from InboxProcessor.
+      where: { recipientActivityPubId: normalizeUrl(actor.activityPubId) }, // Use the new recipientActivityPubId for filtering
       skip: (page - 1) * perPage,
       take: perPage,
       order: { createdAt: 'DESC' },
@@ -598,6 +600,58 @@ export class AppService {
   }
 
   /**
+   * Retrieves a paginated collection of public flashcards created by a given actor.
+   * @param username The preferred username of the actor.
+   * @param page The page number for pagination.
+   * @param perPage The number of items per page.
+   * @returns An ActivityPub OrderedCollection page.
+   */
+  async getCreatedFlashcardsCollection(username: string, page: number, perPage: number): Promise<any> {
+      this.logger.debug(`Fetching created flashcards for actor: ${username}, page: ${page}, perPage: ${perPage}`);
+      const actor = await this.actorService.findActorByPreferredUsername(username);
+      if (!actor) {
+          throw new NotFoundException(`Actor with username '${username}' not found.`);
+      }
+
+      const [flashcards, totalItems] = await this.flashcardRepository.findAndCount({
+          where: {
+              attributedToActivityPubId: actor.activityPubId,
+              isPublic: true, // Only include public flashcards
+              deletedAt: IsNull(), // Ensure not soft-deleted
+          },
+          skip: (page - 1) * perPage,
+          take: perPage,
+          order: { createdAt: 'DESC' },
+      });
+
+      // The ActivityPub collection should contain the IDs of the objects
+      const items = flashcards.map(fc => fc.activityPubId);
+
+      // Construct the collection URL for this endpoint
+      const collectionId = `${actor.activityPubId}/flashcards`; // Canonical URL for this specific collection
+      const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+      const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+      const totalPages = Math.ceil(totalItems / perPage);
+      const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+      const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+      const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
+
+      return {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: collectionId,
+          type: 'OrderedCollectionPage',
+          totalItems: totalItems,
+          partOf: collectionId, // Reference back to the full collection
+          first: firstPageId,
+          last: lastPageId,
+          prev: prevPageId,
+          next: nextPageId,
+          current: currentPageId,
+          orderedItems: items,
+      };
+  }
+
+  /**
    * Retrieves a specific ActivityPub Activity object by its full ActivityPub ID.
    * @param activityPubId The full ActivityPub URI of the activity.
    * @returns The raw ActivityPub object data.
@@ -615,58 +669,85 @@ export class AppService {
   }
 
   /**
-   * Retrieves a local content object (e.g., Note, edu:Flashcard) by its ID.
-   * This handles both generic ContentObjectEntity and specific FlashcardEntity.
-   * @param objectId The local ID or ActivityPubId of the content object.
-   * @returns The content object data.
+   * Retrieves the local JSON-LD representation of a content object by its ActivityPub ID.
+   * This method attempts to find the object in specific entity repositories (Flashcard, FlashcardModel)
+   * before falling back to a generic ContentObjectEntity.
+   * @param objectId The ActivityPub ID (IRI) of the object to retrieve.
+   * @returns The JSON-LD representation of the object.
+   * @throws NotFoundException if the object is not found locally.
    */
-  async getLocalContentObject(objectId: string): Promise<ContentObjectEntity | FlashcardEntity> {
-    this.logger.debug(`Fetching local content object from DB for ID: ${objectId}`);
+  async getLocalContentObject(objectId: string): Promise<any> { // Updated return type to `any` for flexibility
+      this.logger.debug(`Fetching local content object from DB for ID: ${objectId}`);
 
-    // First, try to find it as a FlashcardEntity
-    const flashcard = await this.flashcardRepository.findOne({
-      where: { activityPubId: normalizeUrl(objectId), deletedAt: IsNull() },
-      relations: ['eduModel', 'creator'],
-    });
+      // First, try to find it as a FlashcardEntity
+      const flashcard = await this.flashcardRepository.findOne({
+          where: { activityPubId: normalizeUrl(objectId), deletedAt: IsNull() },
+          relations: ['eduModel', 'creator'], // Ensure relations are loaded if needed for mapping
+      });
 
-    if (flashcard) {
-      // If found as a Flashcard, map it to a generic ContentObject-like structure for ActivityPub
-      // This creates a JSON-LD representation of the edu:Flashcard
-      const flashcardContent =
-      `Flashcard: ${flashcard.name}\n\n` +
-      Object.entries(flashcard.eduFieldsData)
-        .map(([key, value]) => `${key}: ${value}`)
-        .join('\n');
+      if (flashcard) {
+          // Map FlashcardEntity to its ActivityPub JSON-LD representation
+          // This mapping should be consistent with the EducationPub Vocabulary Specification
+          return {
+              '@context': [
+                  'https://www.w3.org/ns/activitystreams',
+                  'https://social.bleauweb.org/ns/education-pub', // Our custom context
+              ],
+              id: flashcard.activityPubId,
+              type: ['edu:Flashcard', 'Document'], // Consistent with edu:Flashcard definition
+              name: flashcard.name,
+              // REMOVED: 'summary' property as it does not exist on FlashcardEntity
+              url: flashcard.activityPubId, // Canonical URL is its ID
+              attributedTo: flashcard.attributedToActivityPubId,
+              'edu:model': flashcard.eduModel?.activityPubId, // Link to FlashcardModel (use optional chaining)
+              'edu:fieldsData': flashcard.eduFieldsData,
+              'edu:tags': flashcard.eduTags,
+              published: flashcard.createdAt.toISOString(),
+              updated: flashcard.updatedAt.toISOString(),
+              // Include raw data for internal debugging/completeness, but not strictly part of AP spec
+              // data: flashcard,
+          };
+      }
 
-      return {
-        id: flashcard.activityPubId,
-        type: ['edu:Flashcard', 'Note'], // Flashcard can also be a Note
-        attributedTo: flashcard.attributedToActivityPubId,
-        published: flashcard.createdAt.toISOString(),
-        content: flashcardContent,
-        name: flashcard.name,
-        'edu:model': flashcard.eduModel?.activityPubId, // Link to the model
-        'edu:fieldsData': flashcard.eduFieldsData,
-        ...(flashcard.eduTags && { 'edu:tags': flashcard.eduTags }),
-        ...(flashcard.eduTargetLanguage && { 'edu:targetLanguage': flashcard.eduTargetLanguage }),
-        ...(flashcard.eduSourceLanguage && { 'edu:sourceLanguage': flashcard.eduSourceLanguage }),
-        data: flashcard, // Store the original entity for internal use if needed
-        createdAt: flashcard.createdAt,
-        updatedAt: flashcard.updatedAt,
-      } as any; // Cast to any because it's a mix of ContentObjectEntity and Flashcard specific fields
-    }
+      // Second, try to find it as a FlashcardModelEntity
+      const flashcardModel = await this.flashcardModelRepository.findOne({
+          where: { activityPubId: normalizeUrl(objectId) },
+      });
 
-    // If not a Flashcard, try to find it as a generic ContentObjectEntity
-    const contentObject = await this.contentObjectRepository.findOne({
-      where: { activityPubId: normalizeUrl(objectId) },
-    });
+      if (flashcardModel) {
+          // Map FlashcardModelEntity to its ActivityPub JSON-LD representation
+          // This mapping should be consistent with the EducationPub Vocabulary Specification
+          return {
+              '@context': [
+                  'https://www.w3.org/ns/activitystreams',
+                  'https://social.bleauweb.org/ns/education-pub', // Our custom context
+              ],
+              id: flashcardModel.activityPubId,
+              type: ['edu:FlashcardModel', 'Object'], // FlashcardModel is also a generic Object
+              name: flashcardModel.name,
+              summary: flashcardModel.summary,
+              url: flashcardModel.activityPubId, // Canonical URL is its ID
+              'edu:fields': flashcardModel.eduFields,
+              'edu:cardTemplates': flashcardModel.eduCardTemplates,
+              'edu:stylingCSS': flashcardModel.eduStylingCSS,
+              published: flashcardModel.createdAt.toISOString(),
+              updated: flashcardModel.updatedAt.toISOString(),
+              // data: flashcardModel,
+          };
+      }
 
-    if (contentObject) {
-      return contentObject;
-    }
+      // If not a Flashcard or FlashcardModel, try to find it as a generic ContentObjectEntity
+      const contentObject = await this.contentObjectRepository.findOne({
+          where: { activityPubId: normalizeUrl(objectId) },
+      });
 
-    this.logger.warn(`Local content object '${objectId}' not found in local DB.`);
-    throw new NotFoundException(`Local content object with ID '${objectId}' not found.`);
+      if (contentObject) {
+          // For generic ContentObject, return its stored data
+          return contentObject.data; // Assuming `data` column already holds the full JSON-LD
+      }
+
+      this.logger.warn(`Local content object '${objectId}' not found in local DB.`);
+      throw new NotFoundException(`Local content object with ID '${objectId}' not found.`);
   }
 
   /**
@@ -687,8 +768,6 @@ export class AppService {
     const [publicFlashcards, totalFlashcards] = await this.flashcardRepository.findAndCount({
       where: { isPublic: true, deletedAt: IsNull() },
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * perPage,
-      take: perPage, // This will limit flashcards if they fill the page
       relations: ['eduModel', 'creator'],
     });
 
@@ -702,20 +781,21 @@ export class AppService {
         // For MVP, we assume activities sent to "Public" are stored as such.
       },
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * perPage,
-      take: perPage,
     });
 
     // Combine and sort by createdAt. This is a naive merge, a real timeline
     // would involve more complex aggregation and sorting from various sources.
     const combinedItems = [
-      ...publicFlashcards.map(fc => ({ type: 'edu:Flashcard', id: fc.activityPubId, data: fc })),
-      ...publicActivities.map(act => ({ type: act.type, id: act.activityPubId, data: act.data })),
+      ...publicFlashcards.map(fc => ({ type: 'edu:Flashcard', id: fc.activityPubId, data: fc, createdAt: fc.createdAt })),
+      ...publicActivities.map(act => ({ type: act.type, id: act.activityPubId, data: act.data, createdAt: act.createdAt })),
     ].sort((a, b) => {
         const dateA = new Date((a.data as any).createdAt || (a.data as any).published || (a.data as any).updated);
         const dateB = new Date((b.data as any).createdAt || (b.data as any).published || (b.data as any).updated);
         return dateB.getTime() - dateA.getTime(); // Newest first
-    }).slice(0, perPage); // Ensure we only return 'perPage' items after sorting
+    });
+
+    // Apply pagination after sorting
+    const paginatedItems = combinedItems.slice((page - 1) * perPage, page * perPage);
 
     const totalItems = totalFlashcards + totalActivities; // A rough total for now
     const collectionId = `${this.instanceBaseUrl}/public`;
@@ -737,13 +817,13 @@ export class AppService {
       prev: prevPageId,
       next: nextPageId,
       current: currentPageId,
-      orderedItems: combinedItems.map(item => item.id), // Return just the IDs for the collection
+      orderedItems: paginatedItems.map(item => item.id), // Return just the IDs for the collection
     };
   }
 
   /**
    * Retrieves NodeInfo v2.0 information for the instance.
-   * @returns NodeInfo v2.0 object.
+   * @returns NodeInfo v2.2 object.
    */
   async getNodeInfo2(): Promise<any> {
     // This is a basic NodeInfo v2.0 structure. You can expand it with more details.
