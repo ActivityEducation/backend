@@ -1,67 +1,59 @@
-// src/main.ts
-// Updated to include body-parser for raw body access, global prefix, and swagger setup
-
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import * as bodyParser from 'body-parser';
 import { setupSwagger } from './swagger.setup';
-import { ConfigService } from '@nestjs/config';
+import { HttpExceptionFilter } from './shared/filters/http-exception.filter';
+import { LoggerService } from './shared/services/logger.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
-    bufferLogs: true, // Buffers logs until a custom logger is attached
-    rawBody: true,
+    rawBody: true, // Essential for HTTP Signature verification (signature is calculated over raw body)
+    bodyParser: false, // Disable NestJS's default body parser to allow custom raw body parsing
+    logger: new Logger(),
   });
 
-  const configService = app.get(ConfigService);
-  const logger = new Logger('NestApplication'); // Use a standard Nest Logger for bootstrap phase
+  // Order of body-parsers is crucial for rawBody access:
+  // 1. Capture raw body for ActivityPub specific content types.
+  app.use(bodyParser.raw({ type: 'application/ld+json' }));
+  app.use(bodyParser.raw({ type: 'application/activity+json' }));
 
-  // Enable raw body parsing for ActivityPub HTTP Signature verification
-  // The 'rawBody' property needs to be accessible for digest calculation
-  app.use(bodyParser.json({
-    limit: '10mb', // Adjust limit as needed
-    verify: (req: any, res, buf) => {
-      // Store the raw body buffer on the request object for later use by guards/interceptors
-      req.rawBody = buf;
-    },
-  }));
-  app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+  // 2. Parse JSON and URL-encoded bodies.
+  app.use(bodyParser.json({ type: 'application/ld+json' }));
+  app.use(bodyParser.json({ type: 'application/activity+json' }));
+  app.use(bodyParser.json()); // For general JSON
+  app.use(bodyParser.urlencoded({ extended: true })); // For form data
 
-  // For specific ActivityPub content types, ensure raw body is also captured
-  app.use(bodyParser.raw({
-    type: 'application/activity+json',
-    limit: '10mb',
-    verify: (req: any, res, buf) => {
-      req.rawBody = buf;
-    },
-  }));
-  app.use(bodyParser.raw({
-    type: 'application/ld+json',
-    limit: '10mb',
-    verify: (req: any, res, buf) => {
-      req.rawBody = buf;
-    },
-  }));
+  const loggerService = await app.resolve(LoggerService);
+  loggerService.setContext('Bootstrap');
 
-  // Apply global validation pipe to automatically validate incoming DTOs
+  // Apply global exception filter for consistent error responses
+  app.useGlobalFilters(new HttpExceptionFilter(loggerService));
+
+  // Enable global validation pipe for DTOs
   app.useGlobalPipes(new ValidationPipe({
     transform: true, // Automatically transform payloads to DTO instances
     whitelist: true, // Remove properties not defined in the DTO
-    forbidNonWhitelisted: true, // Throw an error if non-whitelisted properties are present
+    forbidNonWhitelisted: true, // Throw error if non-whitelisted properties are present
   }));
 
-  // Set a global API prefix for most application routes.
-  // Routes under .well-known, nodeinfo, ns, health, and root path (for frontend) are excluded.
-  app.setGlobalPrefix('api', {
-    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health', ''], // Exclude paths for specific public endpoints
+  // Enable CORS for web clients
+  app.enableCors({
+    origin: '*', // WARNING: Restrict to trusted origins in production
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true,
+    // Expose/allow headers relevant for ActivityPub HTTP Signatures
+    allowedHeaders: 'Content-Type, Accept, Authorization, Signature, Date, Digest',
+    exposedHeaders: 'Signature, Date, Digest',
   });
 
-  // Setup Swagger API documentation
+  // Set a global prefix for API routes, excluding well-known and nodeinfo
+  app.setGlobalPrefix('api', {
+    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health'],
+  });
   setupSwagger(app);
 
-  const port = configService.get<number>('PORT') || 3000; // Get port from ConfigService
-  await app.listen(port);
-  logger.log(`Application is running on: ${await app.getUrl()}`);
+  await app.listen(80);
+  loggerService.log(`Application is running on: ${await app.getUrl()}`, 'Bootstrap');
 }
 bootstrap();
