@@ -1,4 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, Index, ManyToOne, JoinColumn } from 'typeorm';
+// src/features/activitypub/entities/activity.entity.ts
+
+import { Entity, PrimaryGeneratedColumn, Column, Index, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { ActorEntity } from './actor.entity'; // Import ActorEntity for relationship definition
 
 @Entity('activities') // Defines this class as a TypeORM entity mapped to the 'activities' table
@@ -29,11 +31,16 @@ export class ActivityEntity {
   @Column({ type: 'text', nullable: true }) // The ActivityPub URI of the object this activity is in reply to (for replies)
   inReplyToActivityPubId?: string;
 
+  // FIX: Changed type to 'string | null | undefined' to explicitly allow null values
+  // This aligns with the nullable: true in the Column decorator and resolves the TS2769 error.
+  @Column({ type: 'text', nullable: true })
+  recipientActivityPubId?: string | null;
+
   @Column({ type: 'jsonb' }) // JSONB column to store the full ActivityPub JSON-LD payload of the activity
   // This allows for flexible storage of all ActivityPub properties without a rigid schema.
   data: any;
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @CreateDateColumn()
   createdAt: Date; // Timestamp for when the activity record was created
 
   @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP' })

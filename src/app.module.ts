@@ -113,9 +113,9 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
         username: configService.get<string>('DB_USERNAME'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_DATABASE'),
-        // Entities are now registered within their respective feature modules (e.g., ActivityPubModule)
-        // So, we remove the direct listing here.
-        entities: [ActorEntity, ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity, BlockEntity, AnnounceEntity, FlashcardEntity, FlashcardModelEntity, Flashcard, UserEntity, AnnounceEntity, ProcessedActivityEntity],
+        // ACTION: This array should now be empty as entities are registered
+        // within their respective feature modules (e.g., ActivityPubModule).
+        entities: [],
         dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.
                            // In production, use database migrations (e.g., TypeORM CLI commands)

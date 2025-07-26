@@ -1,3 +1,5 @@
+// src/features/educationpub/views/flashcard.view.ts
+
 import { ApiResponseProperty } from "@nestjs/swagger";
 import { Transform } from "class-transformer";
 import { ContentObjectEntity } from "src/features/activitypub/entities/content-object.entity";
@@ -7,7 +9,8 @@ import { DataSource, ViewColumn, ViewEntity } from "typeorm";
     expression: (dataSource: DataSource) => dataSource
         .createQueryBuilder()
         .from(ContentObjectEntity, "object")
-        .where("object.type = 'Flashcardd'")
+        // CORRECTED: Changed 'Flashcardd' to 'Flashcard' to fix typo and ensure correct filtering.
+        .where("object.type = 'Flashcard'")
 })
 export class Flashcard {
     @ViewColumn({ name: "data" })
