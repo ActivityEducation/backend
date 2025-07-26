@@ -187,6 +187,22 @@ export class ActorService {
   }
 
   /**
+   * Finds a local actor by their preferred username.
+   *
+   * @param userId The preferred username of the local actor.
+   * @returns The ActorEntity if found.
+   * @throws NotFoundException if no local actor with the given username exists.
+   */
+  async findActorForUser(userId: string): Promise<ActorEntity> {
+    this.logger.debug(`Searching for local actor by id: ${userId}`);
+    const actor = await this.actorRepository.findOne({ where: { id: userId, isLocal: true } });
+    if (!actor) {
+      throw new NotFoundException(`Local actor with id '${userId}' not found.`);
+    }
+    return actor;
+  }
+
+  /**
    * Finds an actor (local or cached remote) by their preferred username.
    * This method performs a lookup based on the preferredUsername column in the database.
    *

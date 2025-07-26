@@ -1,11 +1,15 @@
 // src/core/services/app.service.ts
 
-import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, IsNull, Repository } from 'typeorm';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
-import { UserEntity } from 'src/features/auth/entities/user.entity';
 import { ActivityEntity } from 'src/features/activitypub/entities/activity.entity';
 import { FollowEntity } from 'src/features/activitypub/entities/follow.entity';
 import { ContentObjectEntity } from 'src/features/activitypub/entities/content-object.entity';
@@ -13,52 +17,46 @@ import { LikeEntity } from 'src/features/activitypub/entities/like.entity';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { ProcessedActivityEntity } from 'src/features/activitypub/entities/processed-activity.entity';
-import { normalizeUrl } from 'src/shared/utils/url-normalizer';
 import { RemoteObjectService } from './remote-object.service';
 import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
-import { FlashcardModelEntity } from 'src/features/educationpub/entities/flashcard-model.entity';
+import { URL } from 'url';
+import { randomUUID } from 'crypto';
+import { ActorService } from 'src/features/activitypub/services/actor.service';
+import { normalizeUrl } from 'src/shared/utils/url-normalizer';
+import { Request } from 'express';
 
 /**
  * AppService
  *
- * This service acts as a central orchestrator for various application
- * functionalities, particularly those involving interactions between different
- * modules and external ActivityPub instances. It handles core logic for:
- * - ActivityPub actor profile retrieval.
- * - Processing incoming (inbox) and outgoing (outbox) ActivityPub activities.
- * - Managing ActivityPub collections (followers, following, liked, outbox, inbox, public).
- * - Delegating activity processing to appropriate handlers.
- * - Coordinating with queueing mechanisms (BullMQ) for asynchronous tasks.
+ * This service acts as a central orchestrator for various application-level
+ * operations, particularly those involving cross-module interactions or
+ * complex business logic that doesn't fit neatly into a single feature module.
+ * It handles ActivityPub federation concerns, content retrieval, and instance information.
  */
 @Injectable()
 export class AppService {
   private readonly instanceBaseUrl: string;
+  private readonly instanceDomain: string;
 
   constructor(
     @InjectRepository(ActorEntity)
-    private readonly actorRepository: Repository<ActorEntity>,
-    @InjectRepository(UserEntity)
-    private readonly userRepository: Repository<UserEntity>,
+    private actorRepository: Repository<ActorEntity>,
     @InjectRepository(ActivityEntity)
-    private readonly activityRepository: Repository<ActivityEntity>,
+    private activityRepository: Repository<ActivityEntity>,
     @InjectRepository(FollowEntity)
-    private readonly followRepository: Repository<FollowEntity>,
+    private followRepository: Repository<FollowEntity>,
     @InjectRepository(ContentObjectEntity)
-    private readonly contentObjectRepository: Repository<ContentObjectEntity>,
+    private contentObjectRepository: Repository<ContentObjectEntity>,
     @InjectRepository(LikeEntity)
-    private readonly likeRepository: Repository<LikeEntity>,
-    @InjectRepository(ProcessedActivityEntity)
-    private readonly processedActivityRepository: Repository<ProcessedActivityEntity>,
+    private likeRepository: Repository<LikeEntity>,
     @InjectRepository(FlashcardEntity)
-    private readonly flashcardRepository: Repository<FlashcardEntity>, // Inject FlashcardEntity
-    @InjectRepository(FlashcardModelEntity)
-    private readonly flashcardModelRepository: Repository<FlashcardModelEntity>, // Inject FlashcardModelEntity
-    private readonly configService: ConfigService,
-    private readonly logger: LoggerService,
+    private flashcardRepository: Repository<FlashcardEntity>, // Inject FlashcardEntity
     @InjectQueue('inbox') private inboxQueue: Queue,
     @InjectQueue('outbox') private outboxQueue: Queue,
+    private readonly configService: ConfigService,
+    private readonly logger: LoggerService,
     private readonly remoteObjectService: RemoteObjectService,
+    private readonly actorService: ActorService, // Inject ActorService
   ) {
     this.logger.setContext('AppService');
     const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
@@ -67,13 +65,39 @@ export class AppService {
       throw new Error('INSTANCE_BASE_URL is not defined.');
     }
     this.instanceBaseUrl = baseUrl;
+    this.instanceDomain = new URL(this.instanceBaseUrl).hostname;
+  }
+
+  getInstanceBaseUrl(): string {
+    return this.instanceBaseUrl;
   }
 
   /**
-   * Returns the base URL of the current ActivityPub instance.
+   * Retrieves the WebFinger JRD (JSON Resource Descriptor) for a given username.
+   * This is used for actor discovery by other Fediverse instances.
+   * @param username The preferred username (e.g., 'alice').
+   * @returns The JRD object.
    */
-  getInstanceBaseUrl(): string {
-    return this.instanceBaseUrl;
+  async getWebfingerJrd(username: string): Promise<any> {
+    this.logger.log(`Generating WebFinger JRD for username: ${username}`);
+    const actor = await this.actorService.findActorByPreferredUsername(username);
+    if (!actor) {
+      this.logger.warn(`WebFinger: Actor '${username}' not found.`);
+      return null;
+    }
+
+    return {
+      subject: `acct:${username}@${this.instanceDomain}`,
+      aliases: [actor.activityPubId],
+      links: [
+        {
+          rel: 'self',
+          type: 'application/activity+json',
+          href: actor.activityPubId,
+        },
+        // Potentially add other links like profile page, etc.
+      ],
+    };
   }
 
   /**
@@ -84,8 +108,7 @@ export class AppService {
    */
   async getActorProfile(username: string): Promise<{ data: object }> {
     this.logger.log(`Fetching actor profile for username: ${username}`);
-    const actor = await this.actorRepository.findOne({ where: { preferredUsername: username } });
-    
+    const actor = await this.actorService.findActorByPreferredUsername(username);
     if (!actor) {
       this.logger.warn(`Actor profile: Actor '${username}' not found.`);
       throw new NotFoundException(`Actor with username '${username}' not found.`);
@@ -96,6 +119,26 @@ export class AppService {
       '@context': [
         'https://www.w3.org/ns/activitystreams',
         'https://w3id.org/security/v1', // For public key
+        // Add Mastodon and Schema.org specific contexts as seen in curl output for richer compatibility
+        {
+          "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+          "toot": "http://joinmastodon.org/ns#",
+          "featured": { "@id": "toot:featured", "@type": "@id" },
+          "featuredTags": { "@id": "toot:featuredTags", "@type": "@id" },
+          "alsoKnownAs": { "@id": "as:alsoKnownAs", "@type": "@id" },
+          "movedTo": { "@id": "as:movedTo", "@type": "@id" },
+          "schema": "http://schema.org#",
+          "PropertyValue": "schema:PropertyValue",
+          "value": "schema:value",
+          "discoverable": "toot:discoverable",
+          "suspended": "toot:suspended",
+          "memorial": "toot:memorial",
+          "indexable": "toot:indexable",
+          "attributionDomains": { "@id": "toot:attributionDomains", "@type": "@id" },
+          "focalPoint": { "@container": "@list", "@id": "toot:focalPoint" }
+        },
+        // EduPub specific context (ensure this URL is accessible and defines edu: vocabulary)
+        'https://edupub.social/ns/educationpub',
       ],
       id: actor.activityPubId,
       type: 'Person', // Or 'Application', etc. based on actor type
@@ -107,529 +150,637 @@ export class AppService {
       followers: actor.followersUrl, // Link to followers collection
       following: actor.followingUrl, // Link to following collection
       liked: actor.likedUrl, // Link to liked collection
+      published: actor.createdAt ? actor.createdAt.toISOString() : undefined, // Add published timestamp
+      url: actor.data?.['url'] || actor.activityPubId, // Use 'url' from data if available, otherwise activityPubId
+      
       // Public key for HTTP Signatures
       publicKey: {
         id: `${actor.activityPubId}#main-key`, // Unique ID for the public key
         owner: actor.activityPubId, // Owner of the public key
         publicKeyPem: actor.publicKeyPem, // The PEM-encoded public key
       },
-      url: actor.activityPubId, // Canonical URL of the actor
-      // Add other ActivityPub properties as needed, e.g., icon, image, endpoints
-      endpoints: {
-        sharedInbox: `${this.instanceBaseUrl}/inbox`, // Common inbox for instances
-      },
+      
+      // Add other ActivityPub properties from actor.data if they exist
+      ...(actor.data?.['icon'] && { icon: actor.data['icon'] }),
+      ...(actor.data?.['image'] && { image: actor.data['image'] }),
+      ...(actor.data?.['alsoKnownAs'] && { alsoKnownAs: actor.data['alsoKnownAs'] }),
+      ...(actor.data?.['tag'] && { tag: actor.data['tag'] }),
+      ...(actor.data?.['attachment'] && { attachment: actor.data['attachment'] }),
+      ...(actor.data?.['endpoints'] && { endpoints: actor.data['endpoints'] }), // Merge or override endpoints
+      // Add Mastodon specific properties if relevant for local actors
+      ...(actor.data?.['manuallyApprovesFollowers'] !== undefined && { manuallyApprovesFollowers: actor.data['manuallyApprovesFollowers'] }),
+      ...(actor.data?.['discoverable'] !== undefined && { discoverable: actor.data['discoverable'] }),
+      ...(actor.data?.['indexable'] !== undefined && { indexable: actor.data['indexable'] }),
+      ...(actor.data?.['suspended'] !== undefined && { suspended: actor.data['suspended'] }),
+      ...(actor.data?.['memorial'] !== undefined && { memorial: actor.data['memorial'] }),
+      ...(actor.data?.['featured'] !== undefined && { featured: actor.data['featured'] }),
+      ...(actor.data?.['featuredTags'] !== undefined && { featuredTags: actor.data['featuredTags'] }),
+      ...(actor.data?.['attributionDomains'] !== undefined && { attributionDomains: actor.data['attributionDomains'] }),
+      ...(actor.data?.['focalPoint'] !== undefined && { focalPoint: actor.data['focalPoint'] }),
     };
+
+    // Ensure endpoints are correctly merged if they exist in actor.data
+    if (actor.data?.['endpoints'] && typeof actor.data['endpoints'] === 'object') {
+        Object.assign(actorProfile.endpoints, actor.data['endpoints']);
+    }
 
     return { data: actorProfile };
   }
 
   /**
-   * Handles incoming ActivityPub POST requests to an actor's inbox.
+   * Handles an incoming ActivityPub POST request to an actor's inbox.
    * Enqueues the activity for asynchronous processing.
-   *
    * @param username The username of the local actor whose inbox received the activity.
-   * @param activity The incoming ActivityPub activity payload.
+   * @param activity The raw ActivityPub JSON-LD payload.
    */
   async handleInboxPost(username: string, activity: any): Promise<void> {
-    this.logger.log(`Received inbox activity for ${username}: ${JSON.stringify(activity.type)}`);
+    this.logger.log(`Enqueueing inbox activity for user '${username}'.`);
 
-    const localActor = await this.actorRepository.findOne({ where: { preferredUsername: username, isLocal: true } });
+    const localActor = await this.actorService.findActorByPreferredUsername(username);
     if (!localActor) {
-      this.logger.warn(`Inbox post received for non-existent local actor: ${username}`);
-      throw new NotFoundException(`Actor ${username} not found on this instance.`);
+      this.logger.warn(`Inbox: Local actor '${username}' not found for incoming activity.`);
+      throw new NotFoundException(`Local actor '${username}' not found.`);
     }
 
-    const activityId = activity.id;
-    if (!activityId) {
-      this.logger.warn(`Received inbox activity for ${username} without an 'id'. Skipping deduplication.`);
+    // Attempt to extract ActivityPub ID and Actor ID from the incoming activity
+    const activityPubId = normalizeUrl(activity.id || `${this.instanceBaseUrl}/activities/${randomUUID()}`); // Generate if missing, but usually present
+    
+    // RESOLVE: Check both 'actor' and 'as:actor' due to JSON-LD aliasing
+    let incomingActor: string | object | undefined = activity.actor || activity['as:actor'];
+    let actorActivityPubId: string;
+
+    if (typeof incomingActor === 'string') {
+        actorActivityPubId = normalizeUrl(incomingActor);
+    } else if (typeof incomingActor === 'object' && incomingActor !== null && (<any>incomingActor).id) {
+        actorActivityPubId = normalizeUrl((<any>incomingActor).id);
     } else {
-      // Check for deduplication
-      const existingProcessedActivity = await this.processedActivityRepository.findOne({ where: { activityId: normalizeUrl(activityId) } });
-      if (existingProcessedActivity) {
-        this.logger.log(`Activity '${activityId}' already processed. Skipping.`);
-        return; // Activity already processed, return early.
-      }
+        this.logger.error(`Incoming inbox activity for '${username}' has no 'actor' or 'as:actor' property with a valid ID. Activity: ${JSON.stringify(activity)}`);
+        throw new BadRequestException('Activity has no actor specified.');
     }
 
-    // Enqueue the activity for asynchronous processing by the InboxProcessor
-    try {
-      await this.inboxQueue.add(
-        'process-inbox-activity',
-        {
-          localActorId: localActor.id,
-          activity: activity,
-          activityId: activityId, // Pass normalized Activity ID for deduplication
-        },
-        {
-          jobId: activityId ? normalizeUrl(activityId) : undefined, // Use normalized Activity ID as jobId for deduplication in BullMQ
-          attempts: 3, // Retry failed jobs
-          backoff: { type: 'exponential', delay: 1000 }, // Exponential backoff for retries
-        }
-      );
-      this.logger.log(`Inbox activity for ${username} enqueued. Job ID: ${activityId}`);
-
-      // Record as processed *after* successful enqueue
-      if (activityId) {
-        const processed = this.processedActivityRepository.create({ activityId: normalizeUrl(activityId) });
-        await this.processedActivityRepository.save(processed);
-      }
-
-    } catch (error) {
-      this.logger.error(`Failed to enqueue inbox activity for ${username}: ${error.message}`, error.stack);
-      throw new InternalServerErrorException('Failed to process inbox activity.');
-    }
+    // Enqueue the activity for processing by the InboxProcessor
+    await this.inboxQueue.add(
+      'process-inbox-activity',
+      {
+        activityId: activityPubId,
+        actorActivityPubId: actorActivityPubId,
+        objectActivityPubId: normalizeUrl(activity.object?.id || activity.object), // Handle direct object URI or embedded object
+        type: activity.type,
+        data: activity, // Store the raw activity payload
+        localActorId: localActor.id, // Pass the internal ID of the local recipient actor
+      },
+      {
+        jobId: activityPubId, // Use ActivityPub ID as jobId for deduplication in BullMQ
+        attempts: 3, // Retry failed jobs
+        backoff: { type: 'exponential', delay: 1000 },
+      },
+    );
+    this.logger.log(`Inbox activity '${activityPubId}' enqueued for '${username}'.`);
   }
 
   /**
-   * Handles outgoing ActivityPub POST requests from a local actor's outbox.
-   * Enqueues the activity for asynchronous dispatch.
-   *
-   * @param username The username of the local actor whose outbox is sending the activity.
-   * @param activity The outgoing ActivityPub activity payload.
-   * @param localActorId The internal database ID of the local actor.
+   * Handles an incoming ActivityPub POST request to an actor's outbox from a local user.
+   * Enqueues the activity for federated dispatch.
+   * @param username The username of the local actor whose outbox is being posted to.
+   * @param activity The raw ActivityPub JSON-LD payload.
+   * @param localUserId The internal ID of the authenticated local user performing the action.
    */
-  async handleOutboxPost(username: string, activity: any, localActorId: string): Promise<void> {
-    this.logger.log(`Received outbox activity for ${username}: ${JSON.stringify(activity.type)}`);
+  async handleOutboxPost(
+    username: string,
+    activity: any,
+    localUserId: string,
+  ): Promise<void> {
+    this.logger.log(`Enqueueing outbox activity for user '${username}'.`);
 
-    const localActor = await this.actorRepository.findOne({ where: { id: localActorId, isLocal: true } });
+    const localActor = await this.actorService.findActorForUser(localUserId);
     if (!localActor || localActor.preferredUsername !== username) {
-      this.logger.warn(`Outbox post received for unauthorized local actor: ${username}, authenticated as ${localActorId}`);
-      throw new NotFoundException(`Actor ${username} not found or unauthorized.`);
+      this.logger.warn(`Outbox: User '${localUserId}' not authorized to post to actor '${username}'s outbox.`);
+      throw new NotFoundException(`Actor '${username}' not found or unauthorized.`);
     }
 
-    // Create a new ActivityEntity to store the outgoing activity locally
-    const newActivity = this.activityRepository.create({
-      activityPubId: activity.id,
+    // Generate a unique ID for the activity if not already present
+    const activityPubId = normalizeUrl(activity.id || `${this.instanceBaseUrl}/activities/${randomUUID()}`);
+    activity.id = activityPubId; // Ensure the activity payload has its ID
+
+    // Ensure actor is correctly set in the activity payload
+    activity.actor = localActor.activityPubId;
+
+    // Persist the outgoing activity locally
+    const newActivityEntity = this.activityRepository.create({
+      activityPubId: activityPubId,
       type: activity.type,
-      actorActivityPubId: activity.actor,
-      objectActivityPubId: activity.object?.id || activity.object, // Can be object or string URI
+      actorActivityPubId: localActor.activityPubId,
+      objectActivityPubId: normalizeUrl(activity.object?.id || activity.object), // Normalize object ID
       data: activity,
       actor: localActor,
     });
+    const savedActivity = await this.activityRepository.save(newActivityEntity);
 
-    try {
-      const savedActivity = await this.activityRepository.save(newActivity);
-      // Enqueue the activity for asynchronous dispatch by the OutboxProcessor
-      await this.outboxQueue.add(
-        'deliver-activity',
-        {
-          activityId: savedActivity.id, // Internal ID
-          activity: savedActivity.data, // Full payload
-          actorId: localActor.id, // Internal Actor ID for signing
-        },
-        {
-          jobId: savedActivity.activityPubId, // Use ActivityPub ID as jobId for idempotency
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1000 },
-        }
-      );
-      this.logger.log(`Outbox activity for ${username} enqueued for dispatch. Job ID: ${savedActivity.activityPubId}`);
-    } catch (error) {
-      this.logger.error(`Failed to enqueue outbox activity for ${username}: ${error.message}`, error.stack);
-      throw new InternalServerErrorException('Failed to process outbox activity.');
-    }
+    // Enqueue the activity for processing by the OutboxProcessor
+    await this.outboxQueue.add(
+      'deliver-activity',
+      {
+        activityId: savedActivity.id, // Use internal DB ID for job tracking
+        activity: savedActivity.data, // Pass the full activity payload
+        actorId: localActor.id, // Pass the internal ID of the local sending actor
+      },
+      {
+        jobId: savedActivity.id, // Use internal DB ID as jobId for tracing
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
+      },
+    );
+    this.logger.log(`Outbox activity '${activityPubId}' enqueued for delivery from '${username}'.`);
   }
 
   /**
-   * Handles incoming ActivityPub POST requests to the relay inbox.
+   * Handles a generic incoming ActivityPub POST request (e.g., to a shared inbox).
    * Enqueues the activity for asynchronous processing.
-   * This is typically for public activities not directly addressed to a specific local actor.
-   *
-   * @param activity The incoming ActivityPub activity payload.
-   * @param req The Express Request object, used to pass rawBody for digest verification.
+   * @param activity The raw ActivityPub JSON-LD payload.
+   * @param req The Express request object.
    */
-  async handleRelayPost(activity: any, req: any): Promise<void> {
-    this.logger.log(`Received relay activity: ${JSON.stringify(activity.type)}`);
+  async handleRelayPost(activity: any, req: Request): Promise<void> {
+    this.logger.log(`Enqueueing relay activity.`);
 
-    const activityId = activity.id;
-    if (!activityId) {
-      this.logger.warn(`Received relay activity without an 'id'. Skipping deduplication.`);
+    const activityPubId = normalizeUrl(activity.id || `${this.instanceBaseUrl}/activities/${randomUUID()}`);
+    
+    // RESOLVE: Check both 'actor' and 'as:actor' due to JSON-LD aliasing
+    let incomingActor: string | object | undefined = activity.actor || activity['as:actor'];
+    let actorActivityPubId: string;
+
+    if (typeof incomingActor === 'string') {
+        actorActivityPubId = normalizeUrl(incomingActor);
+    } else if (typeof incomingActor === 'object' && incomingActor !== null && (<any>incomingActor).id) {
+        actorActivityPubId = normalizeUrl((<any>incomingActor).id);
     } else {
-      // Check for deduplication
-      const existingProcessedActivity = await this.processedActivityRepository.findOne({ where: { activityId: normalizeUrl(activityId) } });
-      if (existingProcessedActivity) {
-        this.logger.log(`Activity '${activityId}' already processed (relay). Skipping.`);
-        return;
-      }
+        this.logger.error(`Incoming relay activity has no 'actor' or 'as:actor' property with a valid ID. Activity: ${JSON.stringify(activity)}`);
+        throw new BadRequestException('Activity has no actor specified.');
     }
 
-    // Enqueue the activity for asynchronous processing by the InboxProcessor
-    try {
-      await this.inboxQueue.add(
-        'process-inbox-activity',
-        {
-          // No localActorId for relay posts, as they are not specifically addressed to one.
-          // The processor will determine relevant local actors or store public content.
-          activity: activity,
-          activityId: activityId,
-        },
-        {
-          jobId: activityId ? normalizeUrl(activityId) : undefined, // Use normalized Activity ID as jobId
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1000 },
-        }
-      );
-      this.logger.log(`Relay activity enqueued. Job ID: ${activityId}`);
+    const objectActivityPubId = normalizeUrl(activity.object?.id || activity.object);
 
-      // Record as processed *after* successful enqueue
-      if (activityId) {
-        const processed = this.processedActivityRepository.create({ activityId: normalizeUrl(activityId) });
-        await this.processedActivityRepository.save(processed);
-      }
-    } catch (error) {
-      this.logger.error(`Failed to enqueue relay activity: ${error.message}`, error.stack);
-      throw new InternalServerErrorException('Failed to process relay activity.');
-    }
+    // TODO: Determine the appropriate local actor(s) to route this activity to.
+    // For a shared inbox, this typically means sending to all followers' inboxes,
+    // but might also involve saving relevant public content locally.
+    // For MVP, we might just enqueue it without a specific local actor recipient,
+    // or route to a "default" local actor's inbox if needed.
+    // For now, let's process it similarly to a direct inbox post but without a specific localActorId.
+
+    await this.inboxQueue.add(
+      'process-inbox-activity',
+      {
+        activityId: activityPubId,
+        actorActivityPubId: actorActivityPubId,
+        objectActivityPubId: objectActivityPubId,
+        type: activity.type,
+        data: activity,
+        localActorId: null, // No specific local actor recipient for relay, handlers will adapt
+      },
+      {
+        jobId: activityPubId, // Use ActivityPub ID as jobId for deduplication in BullMQ
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
+      },
+    );
+    this.logger.log(`Relay activity '${activityPubId}' enqueued.`);
   }
 
-
   /**
-   * Retrieves the followers collection for a given actor.
-   *
+   * Retrieves a paginated collection of followers for a given actor.
    * @param username The preferred username of the actor.
    * @param page The page number for pagination.
    * @param perPage The number of items per page.
-   * @returns An ActivityStreams OrderedCollection object.
+   * @returns An ActivityPub OrderedCollection page.
    */
   async getFollowersCollection(username: string, page: number, perPage: number): Promise<any> {
-    this.logger.debug(`Fetching followers collection for ${username}, page ${page}, perPage ${perPage}`);
-    const localActor = await this.actorRepository.findOne({ where: { preferredUsername: username } });
-    if (!localActor) {
-      throw new NotFoundException(`Actor ${username} not found.`);
+    const actor = await this.actorService.findActorByPreferredUsername(username);
+    if (!actor) {
+      throw new NotFoundException(`Actor with username '${username}' not found.`);
     }
 
-    const [followers, totalItems] = await this.followRepository.findAndCount({
-      where: { followedActivityPubId: localActor.activityPubId, status: 'accepted' },
+    const [follows, totalItems] = await this.followRepository.findAndCount({
+      where: { followedActivityPubId: actor.activityPubId }, // 'object' is the actor being followed
       skip: (page - 1) * perPage,
       take: perPage,
-      relations: ['follower'], // Include follower actor details
+      order: { createdAt: 'DESC' },
     });
 
-    const items = followers.map(follow => follow.followerActivityPubId); // Return ActivityPub IDs of followers
+    const items = follows.map(follow => follow.followerActivityPubId); // Return the IDs of the followers
+
+    const collectionId = actor.followersUrl; // The canonical URL for the followers collection
+    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+    const totalPages = Math.ceil(totalItems / perPage);
+    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
 
     return {
-      "@context": "https://www.w3.org/ns/activitystreams",
-      id: localActor.followersUrl,
-      type: "OrderedCollection",
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: collectionId,
+      type: 'OrderedCollectionPage', // For paginated results
       totalItems: totalItems,
-      // You can add 'first', 'last', 'next', 'prev' links here for full pagination support
+      partOf: collectionId, // Reference back to the full collection
+      first: firstPageId,
+      last: lastPageId,
+      prev: prevPageId,
+      next: nextPageId,
+      current: currentPageId,
       orderedItems: items,
     };
   }
 
   /**
-   * Retrieves the following collection for a given actor.
-   *
+   * Retrieves a paginated collection of actors that a given actor is following.
    * @param username The preferred username of the actor.
    * @param page The page number for pagination.
    * @param perPage The number of items per page.
-   * @returns An ActivityStreams OrderedCollection object.
+   * @returns An ActivityPub OrderedCollection page.
    */
   async getFollowingCollection(username: string, page: number, perPage: number): Promise<any> {
-    this.logger.debug(`Fetching following collection for ${username}, page ${page}, perPage ${perPage}`);
-    const localActor = await this.actorRepository.findOne({ where: { preferredUsername: username } });
-    if (!localActor) {
-      throw new NotFoundException(`Actor ${username} not found.`);
+    const actor = await this.actorService.findActorByPreferredUsername(username);
+    if (!actor) {
+      throw new NotFoundException(`Actor with username '${username}' not found.`);
     }
 
-    const [following, totalItems] = await this.followRepository.findAndCount({
-      where: { followerActivityPubId: localActor.activityPubId, status: 'accepted' },
+    const [follows, totalItems] = await this.followRepository.findAndCount({
+      where: { followerActivityPubId: normalizeUrl(actor.activityPubId) }, // 'actor' is the one doing the following
       skip: (page - 1) * perPage,
       take: perPage,
-      relations: ['following'], // Include following actor details
+      order: { createdAt: 'DESC' },
     });
 
-    const items = following.map(follow => follow.followedActivityPubId); // Return ActivityPub IDs of who this actor is following
+    const items = follows.map(follow => follow.followedActivityPubId); // Return the IDs of followed actors
+
+    const collectionId = actor.followingUrl;
+    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+    const totalPages = Math.ceil(totalItems / perPage);
+    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
 
     return {
-      "@context": "https://www.w3.org/ns/activitystreams",
-      id: localActor.followingUrl,
-      type: "OrderedCollection",
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: collectionId,
+      type: 'OrderedCollectionPage',
       totalItems: totalItems,
+      partOf: collectionId,
+      first: firstPageId,
+      last: lastPageId,
+      prev: prevPageId,
+      next: nextPageId,
+      current: currentPageId,
       orderedItems: items,
     };
   }
 
   /**
-   * Retrieves the outbox collection for a given actor.
-   *
+   * Retrieves a paginated collection of activities from an actor's outbox.
    * @param username The preferred username of the actor.
    * @param page The page number for pagination.
    * @param perPage The number of items per page.
-   * @returns An ActivityStreams OrderedCollection object.
+   * @param authenticatedUserId (Optional) The ID of the authenticated user making the request.
+   * @returns An ActivityPub OrderedCollection page.
    */
-  async getOutboxCollection(username: string, page: number, perPage: number): Promise<any> {
-    this.logger.debug(`Fetching outbox collection for ${username}, page ${page}, perPage ${perPage}`);
-    const localActor = await this.actorRepository.findOne({ where: { preferredUsername: username, isLocal: true } });
-    if (!localActor) {
-      // For outbox, we only expose local actors' outboxes via this endpoint.
-      throw new NotFoundException(`Local actor ${username} not found.`);
+  async getOutboxCollection(username: string, page: number, perPage: number, authenticatedUserId?: string): Promise<any> {
+    const actor = await this.actorService.findActorByPreferredUsername(username);
+    if (!actor) {
+      throw new NotFoundException(`Actor with username '${username}' not found.`);
+    }
+
+    // Only allow access to the outbox if the requesting user is the owner of the outbox,
+    // OR if the activities are publicly addressed (though outbox typically contains public content).
+    // For simplicity, for now, we'll assume outbox is generally public or controlled by the actor.
+    // More complex authorization might involve checking 'to' or 'audience' fields.
+    const isOwner = authenticatedUserId ? (await this.actorService.findActorForUser(authenticatedUserId))?.activityPubId === actor.activityPubId : false;
+
+    const [activities, totalItems] = await this.activityRepository.findAndCount({
+      where: { actorActivityPubId: actor.activityPubId },
+      skip: (page - 1) * perPage,
+      take: perPage,
+      order: { createdAt: 'DESC' },
+    });
+
+    const items = activities.map(activity => activity.activityPubId);
+
+    const collectionId = actor.outbox;
+    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+    const totalPages = Math.ceil(totalItems / perPage);
+    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
+
+    return {
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: collectionId,
+      type: 'OrderedCollectionPage',
+      totalItems: totalItems,
+      partOf: collectionId,
+      first: firstPageId,
+      last: lastPageId,
+      prev: prevPageId,
+      next: nextPageId,
+      current: currentPageId,
+      orderedItems: items,
+    };
+  }
+
+  /**
+   * Retrieves a paginated collection of activities from an actor's inbox.
+   * This is typically private and requires authentication as the inbox owner.
+   * @param username The preferred username of the actor.
+   * @param page The page number for pagination.
+   * @param perPage The number of items per page.
+   * @param authenticatedUserId The ID of the authenticated user making the request.
+   * @returns An ActivityPub OrderedCollection page.
+   * @throws UnauthorizedException if the requesting user is not the inbox owner.
+   */
+  async getInboxCollection(username: string, page: number, perPage: number, authenticatedUserId: string): Promise<any> {
+    const actor = await this.actorService.findActorByPreferredUsername(username);
+    if (!actor) {
+      throw new NotFoundException(`Actor with username '${username}' not found.`);
+    }
+
+    const requestingActor = await this.actorService.findActorForUser(authenticatedUserId);
+
+    // Ensure the requesting user is the owner of this inbox
+    if (!requestingActor || requestingActor.activityPubId !== actor.activityPubId) {
+      this.logger.warn(`Unauthorized access attempt to inbox of '${username}' by actor '${requestingActor?.activityPubId || 'N/A'}'`);
+      throw new UnauthorizedException('Access to this inbox is restricted to the owner.');
     }
 
     const [activities, totalItems] = await this.activityRepository.findAndCount({
-      where: { actorActivityPubId: localActor.activityPubId },
-      order: { createdAt: 'DESC' }, // Order by creation date descending
+      // For inbox, we fetch activities where this actor is the "object" of a "Deliver" or direct "To"
+      // or more broadly, activities where this actor is a recipient.
+      // The current ActivityEntity doesn't store direct recipients, but rather the object of the activity.
+      // This part would need refinement if ActivityEntity's `data` field doesn't capture recipients.
+      // For simplicity, for now, we'll fetch all activities processed by the InboxProcessor that *don't* have a localActorId, assuming they were for this instance's general consumption, or where the `object` field matches this actor's URI if it's a specific activity like Follow/Like.
+      // This is a simplification for MVP, a real inbox might need more complex recipient filtering.
+      // The `InboxProcessor` currently processes activities *for* a `localActorId`.
+      // So, here we would query `ActivityEntity` where `localActorId` matches `actor.id`.
+      where: { actorActivityPubId: normalizeUrl(actor.activityPubId) }, // Assuming `localActorId` is stored on ActivityEntity from InboxProcessor.
       skip: (page - 1) * perPage,
       take: perPage,
+      order: { createdAt: 'DESC' },
     });
 
-    // Return the full activity data (JSON-LD payload) for each activity
-    const items = activities.map(activity => activity.data);
+    const items = activities.map(activity => activity.activityPubId);
+
+    const collectionId = actor.inbox;
+    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+    const totalPages = Math.ceil(totalItems / perPage);
+    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
 
     return {
-      "@context": "https://www.w3.org/ns/activitystreams",
-      id: localActor.outbox,
-      type: "OrderedCollection",
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: collectionId,
+      type: 'OrderedCollectionPage',
       totalItems: totalItems,
+      partOf: collectionId,
+      first: firstPageId,
+      last: lastPageId,
+      prev: prevPageId,
+      next: nextPageId,
+      current: currentPageId,
       orderedItems: items,
     };
   }
 
+
   /**
-   * Retrieves the inbox collection for a given actor.
-   * This endpoint should ideally be protected and only accessible to the actor themselves.
-   *
+   * Retrieves a paginated collection of objects that a given actor has liked.
    * @param username The preferred username of the actor.
    * @param page The page number for pagination.
    * @param perPage The number of items per page.
-   * @returns An ActivityStreams OrderedCollection object.
-   */
-  async getInboxCollection(username: string, page: number, perPage: number): Promise<any> {
-    this.logger.debug(`Fetching inbox collection for ${username}, page ${page}, perPage ${perPage}`);
-    const localActor = await this.actorRepository.findOne({ where: { preferredUsername: username, isLocal: true } });
-    if (!localActor) {
-      throw new NotFoundException(`Local actor ${username} not found.`);
-    }
-
-    // Note: The 'to' or 'audience' fields of incoming activities are usually used to determine if they belong in an inbox.
-    // For simplicity here, we might just query activities where this actor is the actor or the object.
-    // A more robust implementation would filter based on 'to', 'cc', 'bto', 'bcc', 'audience' fields within the activity.data
-    // For MVP, assuming relevant activities are stored and can be filtered or are explicitly linked.
-    // This example fetches activities that have the local actor as the object's attributedTo or are direct responses.
-    const [activities, totalItems] = await this.activityRepository
-      .createQueryBuilder('activity')
-      .leftJoinAndSelect('activity.actor', 'actor') // Join to get actor details if needed
-      .where('activity.actorActivityPubId = :actorId OR activity.objectActivityPubId = :actorId', { actorId: localActor.activityPubId })
-      .orderBy('activity.createdAt', 'DESC')
-      .skip((page - 1) * perPage)
-      .take(perPage)
-      .getManyAndCount();
-
-    const items = activities.map(activity => activity.data);
-
-    return {
-      "@context": "https://www.w3.org/ns/activitystreams",
-      id: localActor.inbox,
-      type: "OrderedCollection",
-      totalItems: totalItems,
-      orderedItems: items,
-    };
-  }
-
-  /**
-   * Retrieves the liked collection for a given actor.
-   *
-   * @param username The preferred username of the actor.
-   * @param page The page number for pagination.
-   * @param perPage The number of items per page.
-   * @returns An ActivityStreams OrderedCollection object.
+   * @returns An ActivityPub OrderedCollection page.
    */
   async getLikedCollection(username: string, page: number, perPage: number): Promise<any> {
-    this.logger.debug(`Fetching liked collection for ${username}, page ${page}, perPage ${perPage}`);
-    const localActor = await this.actorRepository.findOne({ where: { preferredUsername: username } });
-    if (!localActor) {
-      throw new NotFoundException(`Actor ${username} not found.`);
+    const actor = await this.actorService.findActorByPreferredUsername(username);
+    if (!actor) {
+      throw new NotFoundException(`Actor with username '${username}' not found.`);
     }
 
     const [likes, totalItems] = await this.likeRepository.findAndCount({
-      where: { likerActivityPubId: localActor.activityPubId },
+      where: { likerActivityPubId: actor.activityPubId },
       skip: (page - 1) * perPage,
       take: perPage,
-      relations: ['likedObject'], // Optionally load the actual liked object details
+      order: { createdAt: 'DESC' },
     });
 
-    const items = likes.map(like => like.likedObjectActivityPubId); // Return ActivityPub IDs of liked objects
+    const items = likes.map(like => like.likedObjectActivityPubId);
+
+    const collectionId = actor.likedUrl;
+    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+    const totalPages = Math.ceil(totalItems / perPage);
+    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
 
     return {
-      "@context": "https://www.w3.org/ns/activitystreams",
-      id: localActor.likedUrl, // Use the liked collection URL
-      type: "OrderedCollection",
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: collectionId,
+      type: 'OrderedCollectionPage',
       totalItems: totalItems,
+      partOf: collectionId,
+      first: firstPageId,
+      last: lastPageId,
+      prev: prevPageId,
+      next: nextPageId,
+      current: currentPageId,
       orderedItems: items,
     };
   }
 
   /**
-   * Retrieves a specific ActivityPub activity object by its full ActivityPub ID.
-   * This is used for dereferencing objects via their URIs (e.g., from an 'object' field in an activity).
-   *
+   * Retrieves a specific ActivityPub Activity object by its full ActivityPub ID.
    * @param activityPubId The full ActivityPub URI of the activity.
-   * @returns The ActivityEntity data payload.
+   * @returns The raw ActivityPub object data.
    */
-  async getActivityObject(activityPubId: string): Promise<any> {
-    this.logger.debug(`Fetching activity object by ActivityPub ID: ${activityPubId}`);
-    const normalizedId = normalizeUrl(activityPubId);
-    const activity = await this.activityRepository.findOne({ where: { activityPubId: normalizedId } });
+  async getActivityObject(activityPubId: string): Promise<ActivityEntity> {
+    this.logger.debug(`Fetching activity object from DB for ID: ${activityPubId}`);
+    const activity = await this.activityRepository.findOne({
+      where: { activityPubId: normalizeUrl(activityPubId) },
+    });
     if (!activity) {
-      throw new NotFoundException(`Activity with ID '${activityPubId}' not found.`);
+      this.logger.warn(`Activity object '${activityPubId}' not found in local DB.`);
+      throw new NotFoundException(`Activity object with ID '${activityPubId}' not found.`);
     }
-    return activity.data; // Return the stored JSON-LD payload
+    return activity;
   }
 
   /**
-   * Retrieves a specific local content object (e.g., a Note, an Image, a Flashcard)
-   * by its ActivityPub ID. This is typically used when other instances try to
-   * dereference content objects hosted on this instance.
-   *
-   * @param activityPubId The full ActivityPub URI of the content object.
-   * @returns The content object's data payload.
+   * Retrieves a local content object (e.g., Note, edu:Flashcard) by its ID.
+   * This handles both generic ContentObjectEntity and specific FlashcardEntity.
+   * @param objectId The local ID or ActivityPubId of the content object.
+   * @returns The content object data.
    */
-  async getLocalContentObject(activityPubId: string): Promise<any> {
-    this.logger.debug(`Fetching local content object by ActivityPub ID: ${activityPubId}`);
-    const normalizedId = normalizeUrl(activityPubId);
+  async getLocalContentObject(objectId: string): Promise<ContentObjectEntity | FlashcardEntity> {
+    this.logger.debug(`Fetching local content object from DB for ID: ${objectId}`);
 
-    // Try to find in generic ContentObjectEntity
-    let contentObject = await this.contentObjectRepository.findOne({ where: { activityPubId: normalizedId } });
-    if (contentObject) {
-      return contentObject.data;
-    }
+    // First, try to find it as a FlashcardEntity
+    const flashcard = await this.flashcardRepository.findOne({
+      where: { activityPubId: normalizeUrl(objectId), deletedAt: IsNull() },
+      relations: ['eduModel', 'creator'],
+    });
 
-    // If not found as generic content, check specific edu:Flashcard entity
-    const flashcard = await this.flashcardRepository.findOne({ where: { activityPubId: normalizedId } });
     if (flashcard) {
-      // Reconstruct ActivityPub JSON-LD for the flashcard
-      const actor = await this.actorRepository.findOne({ where: { activityPubId: flashcard.attributedToActivityPubId } });
-      const flashcardModel = flashcard.eduModel || await this.remoteObjectService.fetchRemoteObject(flashcard.modelId); // Fetch model if not loaded
-
+      // If found as a Flashcard, map it to a generic ContentObject-like structure for ActivityPub
+      // This creates a JSON-LD representation of the edu:Flashcard
       const flashcardContent =
-        `Flashcard: ${flashcard.name}\n\n` +
-        Object.entries(flashcard.eduFieldsData)
-          .map(([key, value]) => `${key}: ${value}`)
-          .join('\n');
+      `Flashcard: ${flashcard.name}\n\n` +
+      Object.entries(flashcard.eduFieldsData)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join('\n');
 
       return {
-        '@context': [
-          'https://www.w3.org/ns/activitystreams',
-          'https://social.bleauweb.org/ns/education-pub',
-          'https://w3id.org/security/v1',
-        ],
         id: flashcard.activityPubId,
         type: ['edu:Flashcard', 'Note'], // Flashcard can also be a Note
         attributedTo: flashcard.attributedToActivityPubId,
         published: flashcard.createdAt.toISOString(),
-        updated: flashcard.updatedAt.toISOString(), // Use updatedAt for Last-Modified header
         content: flashcardContent,
         name: flashcard.name,
-        'edu:model': flashcardModel?.activityPubId || flashcard.modelId,
+        'edu:model': flashcard.eduModel?.activityPubId, // Link to the model
         'edu:fieldsData': flashcard.eduFieldsData,
         ...(flashcard.eduTags && { 'edu:tags': flashcard.eduTags }),
         ...(flashcard.eduTargetLanguage && { 'edu:targetLanguage': flashcard.eduTargetLanguage }),
         ...(flashcard.eduSourceLanguage && { 'edu:sourceLanguage': flashcard.eduSourceLanguage }),
-      };
+        data: flashcard, // Store the original entity for internal use if needed
+        createdAt: flashcard.createdAt,
+        updatedAt: flashcard.updatedAt,
+      } as any; // Cast to any because it's a mix of ContentObjectEntity and Flashcard specific fields
     }
 
-    // If not found as Flashcard, check FlashcardModel
-    const flashcardModel = await this.flashcardModelRepository.findOne({ where: { activityPubId: normalizedId } });
-    if (flashcardModel) {
-      return {
-        '@context': [
-          'https://www.w3.org/ns/activitystreams',
-          'https://social.bleauweb.org/ns/education-pub',
-          'https://w3id.org/security/v1',
-        ],
-        id: flashcardModel.activityPubId,
-        type: ['edu:FlashcardModel', 'Object'], // Custom type for models
-        name: flashcardModel.name,
-        summary: flashcardModel.summary,
-        'edu:fields': flashcardModel.eduFields,
-        'edu:cardTemplates': flashcardModel.eduCardTemplates,
-        'edu:stylingCSS': flashcardModel.eduStylingCSS,
-        published: flashcardModel.createdAt.toISOString(),
-        updated: flashcardModel.updatedAt.toISOString(),
-      };
+    // If not a Flashcard, try to find it as a generic ContentObjectEntity
+    const contentObject = await this.contentObjectRepository.findOne({
+      where: { activityPubId: normalizeUrl(objectId) },
+    });
+
+    if (contentObject) {
+      return contentObject;
     }
 
-    throw new NotFoundException(`Content object with ID '${activityPubId}' not found.`);
+    this.logger.warn(`Local content object '${objectId}' not found in local DB.`);
+    throw new NotFoundException(`Local content object with ID '${objectId}' not found.`);
   }
 
   /**
-   * Retrieves a public timeline of activities.
+   * Retrieves a paginated public timeline of activities.
    * This typically includes public posts, announces, etc.
-   *
    * @param page The page number for pagination.
    * @param perPage The number of items per page.
-   * @returns An ActivityStreams OrderedCollection object.
+   * @returns An ActivityPub OrderedCollection page.
    */
   async getPublicTimeline(page: number, perPage: number): Promise<any> {
-    this.logger.debug(`Fetching public timeline, page ${page}, perPage ${perPage}`);
+    // For MVP, public timeline can be a combination of:
+    // 1. All local public flashcards
+    // 2. All incoming 'Create' activities with public visibility
+    // 3. All incoming 'Announce' activities
+    // 4. All incoming 'Like' activities
 
-    // This is a simplified public timeline. A real one might aggregate
-    // activities marked 'to: as:Public' or 'to: <instance_public_url>'.
-    // For MVP, we fetch all activities that were intended for public consumption
-    // which were stored. This might involve filtering by certain activity types or recipients.
-    const [activities, totalItems] = await this.activityRepository
-      .createQueryBuilder('activity')
-      .where("activity.data @> '{\"to\": [\"https://www.w3.org/ns/activitystreams#Public\"]}'")
-      .orWhere("activity.data @> '{\"cc\": [\"https://www.w3.org/ns/activitystreams#Public\"]}'")
-      .orderBy('activity.createdAt', 'DESC')
-      .skip((page - 1) * perPage)
-      .take(perPage)
-      .getManyAndCount();
+    // Fetch public flashcards
+    const [publicFlashcards, totalFlashcards] = await this.flashcardRepository.findAndCount({
+      where: { isPublic: true, deletedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * perPage,
+      take: perPage, // This will limit flashcards if they fill the page
+      relations: ['eduModel', 'creator'],
+    });
 
-    const items = activities.map(activity => activity.data);
+    // You might also fetch recent public activities (Create, Announce)
+    // For a simple MVP, let's just use activities that are public.
+    const [publicActivities, totalActivities] = await this.activityRepository.findAndCount({
+      where: {
+        type: In(['Create', 'Announce', 'Like']), // Include relevant public activity types
+        // This is a simplification; a true public timeline would need to filter activities
+        // based on their 'to' or 'audience' properties to determine actual public visibility.
+        // For MVP, we assume activities sent to "Public" are stored as such.
+      },
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * perPage,
+      take: perPage,
+    });
+
+    // Combine and sort by createdAt. This is a naive merge, a real timeline
+    // would involve more complex aggregation and sorting from various sources.
+    const combinedItems = [
+      ...publicFlashcards.map(fc => ({ type: 'edu:Flashcard', id: fc.activityPubId, data: fc })),
+      ...publicActivities.map(act => ({ type: act.type, id: act.activityPubId, data: act.data })),
+    ].sort((a, b) => {
+        const dateA = new Date((a.data as any).createdAt || (a.data as any).published || (a.data as any).updated);
+        const dateB = new Date((b.data as any).createdAt || (b.data as any).published || (b.data as any).updated);
+        return dateB.getTime() - dateA.getTime(); // Newest first
+    }).slice(0, perPage); // Ensure we only return 'perPage' items after sorting
+
+    const totalItems = totalFlashcards + totalActivities; // A rough total for now
+    const collectionId = `${this.instanceBaseUrl}/public`;
+    const currentPageId = `${collectionId}?page=${page}&perPage=${perPage}`;
+    const firstPageId = `${collectionId}?page=1&perPage=${perPage}`;
+    const totalPages = Math.ceil(totalItems / perPage);
+    const lastPageId = `${collectionId}?page=${totalPages}&perPage=${perPage}`;
+    const prevPageId = page > 1 ? `${collectionId}?page=${page - 1}&perPage=${perPage}` : undefined;
+    const nextPageId = page < totalPages ? `${collectionId}?page=${page + 1}&perPage=${perPage}` : undefined;
 
     return {
-      "@context": "https://www.w3.org/ns/activitystreams",
-      id: `${this.instanceBaseUrl}/public`, // Example public timeline ID
-      type: "OrderedCollection",
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: collectionId,
+      type: 'OrderedCollectionPage',
       totalItems: totalItems,
-      orderedItems: items,
+      partOf: collectionId,
+      first: firstPageId,
+      last: lastPageId,
+      prev: prevPageId,
+      next: nextPageId,
+      current: currentPageId,
+      orderedItems: combinedItems.map(item => item.id), // Return just the IDs for the collection
     };
   }
 
   /**
-   * Retrieves NodeInfo 2.0 metadata about this instance.
-   *
-   * @returns An object conforming to the NodeInfo 2.0 schema.
+   * Retrieves NodeInfo v2.0 information for the instance.
+   * @returns NodeInfo v2.0 object.
    */
   async getNodeInfo2(): Promise<any> {
-    this.logger.debug('Fetching NodeInfo 2.0 metadata.');
+    // This is a basic NodeInfo v2.0 structure. You can expand it with more details.
+    // See: https://nodeinfo.diaspora.software/ns/schema/2.0
+    const [localActors, totalLocalActors] = await this.actorRepository.findAndCount({ where: { isLocal: true } });
+    const [remoteActors, totalRemoteActors] = await this.actorRepository.findAndCount({ where: { isLocal: false } });
 
-    // Count local users and posts (adjust queries based on your actual data models)
-    const totalLocalUsers = await this.userRepository.count();
-    const totalLocalPosts = await this.flashcardRepository.count({ where: { isPublic: true } }); // Assuming public flashcards are 'posts'
+    // Count of posts (e.g., Flashcards and other ContentObjects created locally)
+    const totalLocalFlashcards = await this.flashcardRepository.count({ where: { isPublic: true, deletedAt: IsNull() }});
+    const totalLocalNotes = await this.contentObjectRepository.count({ where: { attributedToActivityPubId: In(localActors.map(a => a.activityPubId)) }});
+    const totalPosts = totalLocalFlashcards + totalLocalNotes; // Sum up relevant local content types
 
     return {
-      version: "2.0",
+      version: '2.0',
       software: {
-        name: "edupub",
-        version: "0.1.0-alpha", // Placeholder, ideally from package.json or build process
-        repository: "https://github.com/your-org/edupub", // Placeholder
-        homepage: this.instanceBaseUrl,
+        name: 'edupub',
+        version: '0.1.0-alpha', // Your application's version
+        repository: 'https://github.com/your-repo/edupub', // Link to your repository
+        homepage: this.instanceBaseUrl, // Your instance homepage
       },
-      protocols: [
-        "activitypub"
-      ],
+      protocols: ['activitypub'],
       services: {
-        outbound: [], // e.g., "atom", "gnusocial", "linkedin", "pumpio", "twitter"
-        inbound: []   // e.g., "atom", "gnusocial", "linkedin", "pumpio", "twitter"
+        outbound: [], // e.g., 'atom', 'rss' if you support those
+        inbound: [], // e.g., 'atom', 'rss' if you consume those
       },
-      openRegistrations: false, // Whether new users can register freely (true/false)
       usage: {
         users: {
-          total: totalLocalUsers,
-          activeMonth: 0, // Implement logic to count active users in the last month
-          activeHalfyear: 0, // Implement logic to count active users in the last 6 months
+          total: totalLocalActors,
+          activeMonth: 0, // Implement logic to count active users in a month
+          activeHalfyear: 0, // Implement logic to count active users in half a year
         },
-        localPosts: totalLocalPosts, // Total public content objects (e.g., notes, flashcards)
-        localComments: 0, // Implement if you have distinct comment entities
+        localPosts: totalPosts, // Total number of locally created public posts/flashcards
+        // Implement logic for localComments, etc.
       },
-      // Optional: Add metadata about the instance
-      metadata: {
-        nodeName: "EduPub Instance",
-        nodeDescription: "A federated flashcard and social study platform.",
-        // You can add more custom metadata here.
-      },
+      openRegistrations: false, // Whether new user registrations are open
+      // NodeName, NodeDescription, etc. can be added from config
+      // metadata: {}, // Any additional instance-specific metadata
     };
   }
 }

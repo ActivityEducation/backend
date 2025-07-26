@@ -13,7 +13,6 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Request } from 'express';
 import { AppService } from 'src/core/services/app.service';
 import { Activity } from 'src/shared/decorators/activity.decorator';
 import { User } from 'src/shared/decorators/user.decorator';
@@ -22,6 +21,7 @@ import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
 import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { ActorEntity } from '../entities/actor.entity';
+import { Request } from 'express';
 
 @Controller()
 export class ActivityPubController {
@@ -149,6 +149,7 @@ export class ActivityPubController {
   @Header('Content-Type', 'application/activity+json')
   @UseGuards(JwtAuthGuard) // Protect with JWT for full access, or implement public/private logic in service
   async inboxCollection(
+    @User() user: ActorEntity,
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('perPage', new DefaultValuePipe(10), ParseIntPipe) perPage: number,
@@ -156,7 +157,7 @@ export class ActivityPubController {
     this.logger.log(
       `Fetching inbox for '${username}'. Page: ${page}, PerPage: ${perPage}.`,
     );
-    return this.appService.getInboxCollection(username, page, perPage);
+    return this.appService.getInboxCollection(username, page, perPage, user.id);
   }
 
   // Liked collection endpoint: GET /api/actors/:username/liked
