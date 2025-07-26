@@ -6,7 +6,7 @@ import { HttpModule } from '@nestjs/axios';
 import { AppService } from './services/app.service';
 import { RedisModule } from './redis.module';
 import { CommonModule } from '../shared/common.module'; // Import the new CommonModule
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TypeOrmModule } from '@nestjs/typeorm'; // NEW: Import TypeOrmModule
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
 import { ActivityEntity } from 'src/features/activitypub/entities/activity.entity';
 import { FollowEntity } from 'src/features/activitypub/entities/follow.entity';
@@ -32,19 +32,22 @@ import { RemoteObjectService } from './services/remote-object.service';
     HttpModule,   // For making external HTTP requests
     RedisModule,  // For Redis caching/queueing infrastructure
     CommonModule, // Provides shared components like guards, filters
+    // NEW: Provide repositories needed by AppService and other core services
     TypeOrmModule.forFeature([
-      ActorEntity,
-      ActivityEntity,
-      FollowEntity,
+      FlashcardEntity,
+      FlashcardModelEntity,
       ContentObjectEntity,
+      ActivityEntity,
+      ActorEntity,
+      // The following entities are also used by services potentially injected in CoreModule
+      // or are part of the core data model. Ensure all necessary entities are listed.
+      FollowEntity,
       LikeEntity,
       BlockEntity,
       UserEntity,
       AnnounceEntity,
-      FlashcardEntity,
-      FlashcardModelEntity,
       ProcessedActivityEntity,
-    ]), // Register entities for TypeORM
+    ]),
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
     forwardRef(() => ActivityPubModule)
@@ -67,7 +70,22 @@ import { RemoteObjectService } from './services/remote-object.service';
     KeyManagementService,
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
+    // Export TypeOrmModule.forFeature to allow other modules to inject entity repositories
+    // This is typically not needed if CoreModule is @Global() or its services are explicitly exported.
+    // However, if other modules directly inject repositories that are declared here, they need to be exported.
+    TypeOrmModule.forFeature([
+      FlashcardEntity,
+      FlashcardModelEntity,
+      ContentObjectEntity,
+      ActivityEntity,
+      ActorEntity,
+      FollowEntity,
+      LikeEntity,
+      BlockEntity,
+      UserEntity,
+      AnnounceEntity,
+      ProcessedActivityEntity,
+    ]),
   ],
 })
 export class CoreModule {}
-
