@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Request } from 'express';
-import { KeyManagementService } from '../services/key-management.service';
+import { KeyManagementService } from '../../core/services/key-management.service';
 import * as HttpSignature from '@peertube/http-signature'; // Changed: Import as namespace for @peertube/http-signature
 import * as util from 'util'; // Re-added util for deep logging
 import { LoggerService } from '../services/logger.service';

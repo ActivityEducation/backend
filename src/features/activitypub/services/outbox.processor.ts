@@ -6,7 +6,7 @@ import { Job } from 'bullmq';
 import { ActorEntity } from '../entities/actor.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { KeyManagementService } from 'src/shared/services/key-management.service';
+import { KeyManagementService } from 'src/core/services/key-management.service';
 import { RemoteObjectService } from 'src/core/services/remote-object.service';
 import * as HttpSignature from '@peertube/http-signature';
 import * as jsonld from 'jsonld'; // For JSON-LD canonicalization

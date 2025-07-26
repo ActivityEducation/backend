@@ -8,7 +8,7 @@ import { HttpExceptionFilter } from './filters/http-exception.filter';
 import { HttpSignatureVerificationError } from './exceptions/signature-verification.exception'; // Exceptions are usually just classes, not providers
 import { InvalidSignatureException } from './exceptions/invalid-signature.exception';
 import { InvalidDigestError } from './exceptions/invalid-digest.exception';
-import { KeyManagementService } from './services/key-management.service';
+import { KeyManagementService } from '../core/services/key-management.service';
 import { CoreModule } from '../core/core.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActorEntity } from '../features/activitypub/entities/actor.entity';
@@ -48,9 +48,6 @@ import { LoggerService } from './services/logger.service';
     // or applied via @UseFilters() decorator. Listing it here makes it available for DI.
     HttpExceptionFilter,
 
-    // Services
-    KeyManagementService,
-
     // Exceptions are typically classes and not providers themselves,
     // unless they involve some DI for their construction.
     // They are listed here for completeness if they were to be injected.
@@ -65,7 +62,6 @@ import { LoggerService } from './services/logger.service';
     HttpSignatureVerificationGuard,
     RateLimitGuard,
     HttpExceptionFilter, // Exporting the filter allows it to be injected
-    KeyManagementService,
     // Exceptions are generally not exported as they are instantiated directly or thrown
     // but if they were to be injected, they would need to be exported.
   ],

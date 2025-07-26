@@ -9,7 +9,6 @@ import { ContentObjectEntity } from '../../features/activitypub/entities/content
 import { LoggerService } from '../../shared/services/logger.service';
 import { normalizeUrl } from '../../shared/utils/url-normalizer';
 import * as jsonld from 'jsonld'; // For JSON-LD canonicalization
-import { KeyManagementService } from '../../shared/services/key-management.service';
 import * as HttpSignature from '@peertube/http-signature'; // For HTTP Signature generation
 import { HttpService } from '@nestjs/axios';
 
@@ -25,7 +24,6 @@ export class RemoteObjectService {
     @InjectRepository(ContentObjectEntity)
     private readonly contentObjectRepository: Repository<ContentObjectEntity>,
     private readonly logger: LoggerService,
-    private readonly keyManagementService: KeyManagementService,
   ) {
     this.logger.setContext('RemoteObjectService');
     const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');

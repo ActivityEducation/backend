@@ -22,28 +22,6 @@ import { ActivityPubController } from './controllers/activitypub.controller';
 import { ActorService } from './services/actor.service'; // Import new ActorService
 import { UserEntity } from '../auth/entities/user.entity';
 
-/**
- * ActivityPubModule
- *
- * This module encapsulates all functionalities related to the ActivityPub protocol.
- * It manages the persistence of ActivityPub entities and handles the processing
- * of incoming (inbox) and outgoing (outbox) activities using BullMQ queues.
- *
- * It imports:
- * - TypeOrmModule.forFeature: To register the ActivityPub related entities with TypeORM.
- * - BullModule.registerQueue: To set up the 'inbox' and 'outbox' message queues.
- * - CoreModule: To access core services like AppService, RemoteObjectService, and HttpModule.
- * - CommonModule: To access shared services like KeyManagementService and guards.
- *
- * It provides:
- * - InboxProcessor: Handles the processing of incoming ActivityPub activities.
- * - OutboxProcessor: Handles the processing of outgoing ActivityPub activities.
- *
- * It exports:
- * - TypeOrmModule.forFeature: To allow other modules to inject repositories for these entities.
- * - BullModule.registerQueue: To allow other modules to interact with these queues.
- * - InboxProcessor & OutboxProcessor: If other modules need to directly interact with these processors.
- */
 @Module({
   imports: [
     forwardRef(() => ActivityHandlerModule),
@@ -66,9 +44,7 @@ import { UserEntity } from '../auth/entities/user.entity';
     BullModule.registerQueue({
       name: 'outbox',
     }),
-    // Import CoreModule to get access to AppService, RemoteObjectService, HttpModule
     forwardRef(() => CoreModule),
-    // Import CommonModule to get access to shared services like KeyManagementService
     CommonModule,
     ModerationModule, // Import ModerationModule if needed for activity processing
   ],

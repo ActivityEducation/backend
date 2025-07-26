@@ -7,7 +7,7 @@ import { ActorEntity } from '../entities/actor.entity';
 import { UserEntity } from '../../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 import { RemoteObjectService } from 'src/core/services/remote-object.service'; // Import RemoteObjectService for fetching remote actor profiles
-import { KeyManagementService } from 'src/shared/services/key-management.service';
+import { KeyManagementService } from 'src/core/services/key-management.service';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { normalizeUrl } from 'src/shared/utils/url-normalizer';
 
@@ -64,7 +64,7 @@ export class ActorService {
       throw new ConflictException(`Actor with username '${preferredUsername}' already exists.`);
     }
 
-    const { privateKeyPem, publicKeyPem } = this.keyManagementService.generateKeyPair();
+    const { publicKeyPem, privateKeyPem } = await this.keyManagementService.generateKeyPair();
 
     const actorId = `${this.instanceBaseUrl}/actors/${preferredUsername}`;
     const inboxUrl = `${actorId}/inbox`;
