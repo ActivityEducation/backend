@@ -1,3 +1,5 @@
+// src/features/activitypub/activity-handler/handlers/follow.handler.ts
+
 import { IActivityHandler } from '../interfaces/activity-handler.interface';
 import { ActivityHandler } from '../../../../shared/decorators/activity-handler.decorator';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -24,21 +26,21 @@ export class FollowHandler implements IActivityHandler {
     this.logger.setContext('FollowHandler');
   }
 
-  async handleInbox(activity: any): Promise<void> {
-    this.logger.debug(`Received Follow activity: ${JSON.stringify(activity)}`);
+  // Renamed parameter 'activity' to 'jobPayload' for clarity, as it contains more than just the AP activity
+  async handleInbox(jobPayload: { localActorId: string, activity: any, activityId: string, actorActivityPubId: string, objectActivityPubId: string }): Promise<void> {
+    this.logger.debug(`Received Follow activity (jobPayload): ${JSON.stringify(jobPayload)}`);
 
-    // 'activity' here is the ActivityEntity instance, which contains the original JSON-LD in 'activity.data'.
-    // Extract actor and object IDs from the 'data' payload for robustness, as this is the source of truth.
-    // Ensure they are converted to strings.
-    const actorActivityPubId = activity.data?.['as:actor'].id
-    const objectActivityPubId = activity.data?.['as:object'].id
+    // The ActivityPub IDs of the actor and object are already extracted and normalized by InboxProcessor
+    const actorActivityPubId = jobPayload.actorActivityPubId; // The actor initiating the Follow
+    const objectActivityPubId = jobPayload.objectActivityPubId; // The object of the Follow (the actor being followed)
+    const mainActivity = jobPayload.activity; // The full ActivityPub JSON-LD of the original Follow activity
 
     this.logger.log(
       `Handling 'Follow' activity from '${actorActivityPubId}' to '${objectActivityPubId}'.`,
     );
 
     // Check if the objectActivityPubId is valid (not null, undefined, or empty string)
-    if (!objectActivityPubId || objectActivityPubId === 'null' || objectActivityPubId === 'undefined') {
+    if (!objectActivityPubId) {
       this.logger.warn(
         `Follow activity missing object (target actor) ID or it is invalid. Skipping processing.`,
       );
@@ -62,7 +64,7 @@ export class FollowHandler implements IActivityHandler {
         const newFollow = this.followRepository.create({
           followerActivityPubId: actorActivityPubId,
           followedActivityPubId: objectActivityPubId,
-          status: 'pending',
+          status: 'pending', // Initial status
         });
         await this.followRepository.save(newFollow);
         this.logger.log(
@@ -76,15 +78,13 @@ export class FollowHandler implements IActivityHandler {
           type: 'Accept',
           actor: localActor.activityPubId,
           // The 'object' of an Accept activity is the *original* activity being accepted.
-          // So, use activity.data, which contains the full original Follow activity JSON-LD.
-          object: activity.data,
+          // Use 'mainActivity' which contains the full original Follow activity JSON-LD.
+          object: mainActivity,
           to: [actorActivityPubId],
         };
 
         // Enqueue the Accept activity for delivery.
-        // We pass the full JSON-LD payload directly for now, as it's a new activity not yet in DB.
-        // In a more robust system, you might save this Accept activity to your DB first too.
-        await this.outboxQueue.add('deliverActivity', {
+        await this.outboxQueue.add('deliver-activity', { // Ensure job name matches OutboxProcessor
           activity: acceptActivity,
           actorId: localActor.id, // Pass local actor's internal ID for signing
         });
@@ -114,10 +114,10 @@ export class FollowHandler implements IActivityHandler {
           id: `${localActor.activityPubId}/activities/${randomUUID()}/accept`, // New ID to ensure it's treated as a distinct message
           type: 'Accept',
           actor: localActor.activityPubId,
-          object: activity.data, // Original Follow activity JSON-LD
+          object: mainActivity, // Original Follow activity JSON-LD
           to: [actorActivityPubId],
         };
-        await this.outboxQueue.add('deliverActivity', {
+        await this.outboxQueue.add('deliver-activity', { // Ensure job name matches OutboxProcessor
           activity: acceptActivity,
           actorId: localActor.id, // Pass local actor's internal ID for signing
         });

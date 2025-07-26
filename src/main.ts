@@ -1,6 +1,6 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { ClassSerializerInterceptor, Logger, ValidationPipe } from '@nestjs/common';
 import * as bodyParser from 'body-parser';
 import { setupSwagger } from './swagger.setup';
 import { HttpExceptionFilter } from './shared/filters/http-exception.filter';
@@ -26,6 +26,9 @@ async function bootstrap() {
 
   const loggerService = await app.resolve(LoggerService);
   loggerService.setContext('Bootstrap');
+
+
+  app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // Apply global exception filter for consistent error responses
   app.useGlobalFilters(new HttpExceptionFilter(loggerService));

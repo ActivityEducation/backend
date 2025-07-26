@@ -1,12 +1,9 @@
-// src/core/core.module.ts
-
-import { Module } from '@nestjs/common';
+import { Module, Global, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
 import { AppService } from './services/app.service';
 import { RedisModule } from './redis.module';
-import { RemoteObjectService } from './services/remote-object.service';
-import { CommonModule } from '../shared/common.module'; // Import the new CommonModule
+import { CommonModule } from '../shared/common.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
 import { ActivityEntity } from 'src/features/activitypub/entities/activity.entity';
@@ -18,37 +15,24 @@ import { BullModule } from '@nestjs/bullmq';
 import { JsonLDNamespaceController } from './controllers/namespace.controller';
 import { NodeInfoController } from './controllers/nodeinfo.controller';
 import { WellKnownController } from './controllers/well-known.controller';
+import { UserEntity } from 'src/features/auth/entities/user.entity';
+import { AnnounceEntity } from 'src/features/activitypub/entities/announce.entity';
+import { ProcessedActivityEntity } from 'src/features/activitypub/entities/processed-activity.entity';
+import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
+import { FlashcardModelEntity } from 'src/features/educationpub/entities/flashcard-model.entity';
+import { ActivityPubModule } from 'src/features/activitypub/activitypub.module';
+import { KeyManagementService } from './services/key-management.service';
+import { RemoteObjectService } from './services/remote-object.service';
+import { HttpSignatureVerificationGuard } from '../shared/guards/http-signature-verification.guard'; // NEW: Import HttpSignatureVerificationGuard
+import { RateLimitGuard } from '../shared/guards/rate-limit.guard'; // NEW: Import RateLimitGuard
 
-/**
- * CoreModule
- *
- * This module encapsulates core application services and infrastructure
- * that are fundamental to the application's operation but are not
- * specific to any single business feature.
- *
- * It imports:
- * - ConfigModule: For configuration management.
- * - HttpModule: For making HTTP requests to external services.
- * - RedisModule: For Redis integration.
- * - CommonModule: To make shared guards, filters, services, etc., available.
- *
- * It provides and exports:
- * - AppService: The main application service.
- * - RemoteObjectService: For handling remote object interactions.
- * - HttpModule: Exported for other modules to use axios.
- * - RedisModule: Exported for other modules to use Redis.
- *
- * Note: Entities and BullMQ processors (InboxProcessor, OutboxProcessor)
- * have been moved to their respective feature modules (e.g., ActivityPubModule)
- * to align with the feature-based project structure.
- * Guards and KeyManagementService are now part of CommonModule.
- */
+@Global() // CoreModule is typically global for foundational services
 @Module({
   imports: [
-    ConfigModule, // Essential for configuration access
-    HttpModule,   // For making external HTTP requests
-    RedisModule,  // For Redis caching/queueing infrastructure
-    CommonModule, // Provides shared components like guards, filters, and KeyManagementService
+    ConfigModule,
+    HttpModule,
+    RedisModule,
+    CommonModule, // Provides shared components like LoggerService
     TypeOrmModule.forFeature([
       ActorEntity,
       ActivityEntity,
@@ -56,9 +40,15 @@ import { WellKnownController } from './controllers/well-known.controller';
       ContentObjectEntity,
       LikeEntity,
       BlockEntity,
-    ]), // Register entities for TypeORM
+      UserEntity,
+      AnnounceEntity,
+      FlashcardEntity,
+      FlashcardModelEntity,
+      ProcessedActivityEntity,
+    ]),
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
+    forwardRef(() => ActivityPubModule)
   ],
   controllers: [
     JsonLDNamespaceController,
@@ -66,17 +56,38 @@ import { WellKnownController } from './controllers/well-known.controller';
     WellKnownController,
   ],
   providers: [
-    AppService,          // Core application logic
-    RemoteObjectService, // Service for fetching remote ActivityPub objects
+    AppService,
+    RemoteObjectService,
+    KeyManagementService,
+    HttpSignatureVerificationGuard, // NEW: Provide HttpSignatureVerificationGuard here
+    RateLimitGuard, // NEW: Provide RateLimitGuard here
   ],
   exports: [
-    HttpModule,          // Allow other modules to use HttpModule
-    RedisModule,         // Allow other modules to use RedisModule
-    AppService,          // Export AppService for other modules that need it
-    RemoteObjectService, // Export RemoteObjectService for other modules
+    HttpModule,
+    RedisModule,
+    AppService,
+    RemoteObjectService,
+    KeyManagementService,
     BullModule.registerQueue({ name: 'inbox' }),
     BullModule.registerQueue({ name: 'outbox' }),
+    HttpSignatureVerificationGuard, // NEW: Export HttpSignatureVerificationGuard here
+    RateLimitGuard, // NEW: Export RateLimitGuard here
+    // Export TypeOrmModule.forFeature is generally not needed if CoreModule is @Global()
+    // or its services are explicitly exported and consume the repositories.
+    // If other modules directly inject these specific repositories, they need to be exported.
+    TypeOrmModule.forFeature([
+      ActorEntity,
+      ActivityEntity,
+      FollowEntity,
+      ContentObjectEntity,
+      LikeEntity,
+      BlockEntity,
+      UserEntity,
+      AnnounceEntity,
+      FlashcardEntity,
+      FlashcardModelEntity,
+      ProcessedActivityEntity,
+    ]),
   ],
 })
 export class CoreModule {}
-

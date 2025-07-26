@@ -15,6 +15,8 @@ export class FlagHandler implements IActivityHandler {
   }
 
   async handleInbox(activity: any): Promise<void> {
+    this.logger.debug(`Received Flag activity: ${JSON.stringify(activity)}`);
+    
     const actorActivityPubId = String(activity.actorActivityPubId);
     const objectActivityPubId = typeof activity.objectActivityPubId === 'string' ? String(activity.objectActivityPubId) : undefined;
     

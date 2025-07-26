@@ -1,4 +1,5 @@
 // src/features/activitypub/activitypub.module.ts
+// Updated to include new entity and ActorService
 
 import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -9,40 +10,23 @@ import { FollowEntity } from './entities/follow.entity';
 import { ContentObjectEntity } from './entities/content-object.entity';
 import { LikeEntity } from './entities/like.entity';
 import { BlockEntity } from './entities/block.entity';
+import { AnnounceEntity } from './entities/announce.entity';
+import { ProcessedActivityEntity } from './entities/processed-activity.entity';
 import { InboxProcessor } from './services/inbox.processor';
-import { OutboxProcessor } from './services/outbox.processor';
-import { CoreModule } from '../../core/core.module'; // Import CoreModule for AppService, RemoteObjectService, HttpModule
-import { CommonModule } from '../../shared/common.module'; // Import CommonModule for shared services like KeyManagementService
+import { CoreModule } from '../../core/core.module';
+import { CommonModule } from '../../shared/common.module';
 import { ModerationModule } from '../moderation/moderation.module';
-import { DiscoveryModule } from '@nestjs/core';
 import { ActivityHandlerModule } from './activity-handler/handler.module';
 import { ActivityPubController } from './controllers/activitypub.controller';
+import { ActorService } from './services/actor.service';
+import { UserEntity } from '../auth/entities/user.entity';
+import { AuthModule } from '../auth/auth.module';
+import { HttpModule } from '@nestjs/axios'; // NEW: Import HttpModule
+import { OutboxProcessor } from './services/outbox.processor';
 
-/**
- * ActivityPubModule
- *
- * This module encapsulates all functionalities related to the ActivityPub protocol.
- * It manages the persistence of ActivityPub entities and handles the processing
- * of incoming (inbox) and outgoing (outbox) activities using BullMQ queues.
- *
- * It imports:
- * - TypeOrmModule.forFeature: To register the ActivityPub related entities with TypeORM.
- * - BullModule.registerQueue: To set up the 'inbox' and 'outbox' message queues.
- * - CoreModule: To access core services like AppService, RemoteObjectService, and HttpModule.
- * - CommonModule: To access shared services like KeyManagementService and guards.
- *
- * It provides:
- * - InboxProcessor: Handles the processing of incoming ActivityPub activities.
- * - OutboxProcessor: Handles the processing of outgoing ActivityPub activities.
- *
- * It exports:
- * - TypeOrmModule.forFeature: To allow other modules to inject repositories for these entities.
- * - BullModule.registerQueue: To allow other modules to interact with these queues.
- * - InboxProcessor & OutboxProcessor: If other modules need to directly interact with these processors.
- */
 @Module({
   imports: [
-    ActivityHandlerModule,
+    forwardRef(() => ActivityHandlerModule),
     // Register ActivityPub-related entities with TypeORM
     TypeOrmModule.forFeature([
       ActorEntity,
@@ -51,24 +35,32 @@ import { ActivityPubController } from './controllers/activitypub.controller';
       ContentObjectEntity,
       LikeEntity,
       BlockEntity,
+      AnnounceEntity,
+      ProcessedActivityEntity,
+      UserEntity, // Register UserEntity as well, if ActorService depends on it here
     ]),
     // Register BullMQ queues for inbox and outbox processing
-    // Import CoreModule to get access to AppService, RemoteObjectService, HttpModule
-    CoreModule,
-    // Import CommonModule to get access to shared services like KeyManagementService
+    BullModule.registerQueue({
+      name: 'inbox',
+    }),
+    BullModule.registerQueue({
+      name: 'outbox',
+    }),
+    forwardRef(() => CoreModule),
     CommonModule,
-    ModerationModule, // Import ModerationModule if needed for activity processing
+    ModerationModule,
+    AuthModule,
+    HttpModule, // NEW: Add HttpModule to imports
   ],
   providers: [
-    // Provide the processors responsible for handling queue jobs
     InboxProcessor,
     OutboxProcessor,
+    ActorService,
   ],
   controllers: [
     ActivityPubController
   ],
   exports: [
-    // Export TypeOrmModule.forFeature to allow other modules to inject entity repositories
     TypeOrmModule.forFeature([
       ActorEntity,
       ActivityEntity,
@@ -76,10 +68,12 @@ import { ActivityPubController } from './controllers/activitypub.controller';
       ContentObjectEntity,
       LikeEntity,
       BlockEntity,
+      AnnounceEntity,
+      ProcessedActivityEntity,
     ]),
-    // Export processors if other modules need to directly interact with them
     InboxProcessor,
     OutboxProcessor,
+    ActorService,
   ],
 })
 export class ActivityPubModule {}

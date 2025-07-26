@@ -1,54 +1,54 @@
-import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport'; // Base PassportStrategy
-import { ExtractJwt, Strategy } from 'passport-jwt'; // JWT extraction and Strategy from 'passport-jwt'
-import { ConfigService } from '@nestjs/config'; // For accessing environment variables
-import { Repository } from 'typeorm'; // TypeORM Repository type
-import { InjectRepository } from '@nestjs/typeorm'; // Decorator for injecting TypeORM repositories
-import { ActorEntity } from '../../../features/activitypub/entities/actor.entity';
+// src/features/auth/strategies/jwt.strategy.ts
+
+import { ExtractJwt, Strategy } from 'passport-jwt';
+import { PassportStrategy } from '@nestjs/passport';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { AuthService } from '../auth.service';
 import { LoggerService } from 'src/shared/services/logger.service';
+import { UserEntity } from '../entities/user.entity'; // Import UserEntity
 
 @Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') { // 'jwt' is the strategy name
+export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
-    configService: ConfigService,
+    private configService: ConfigService,
+    private authService: AuthService,
     private readonly logger: LoggerService,
-    @InjectRepository(ActorEntity) // Inject the ActorEntity repository
-    private readonly actorRepository: Repository<ActorEntity>,
   ) {
     super({
-      // Configure how to extract the JWT from the request (e.g., from Authorization header as Bearer token)
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      // Set to false to ensure tokens with expired `exp` claim are rejected.
-      // Set to true only for specific testing scenarios where expiration should be ignored.
-      ignoreExpiration: false, 
-      // The secret key used to sign the JWT. Must match the key used during token issuance.
-      secretOrKey: configService.get<string>('JWT_SECRET'),
+      ignoreExpiration: false,
+      secretOrKey: configService.get<string>('JWT_SECRET'), // Ensure this matches the secret used for signing
     });
-    this.logger.setContext('JwtStrategy'); // Set context for the logger
+    this.logger.setContext('JwtStrategy');
   }
 
   /**
-   * Validates the JWT payload. This method is called after the JWT has been successfully
-   * extracted and decoded. It should return a user object that will be attached to `req.user`.
-   * @param payload The decoded JWT payload.
-   * @returns A user object (or null if validation fails).
+   * The 'validate' method is called after the JWT is successfully decrypted.
+   * It receives the decoded JWT payload.
+   * It should return the user object that will be attached to the request (req.user).
+   *
+   * @param payload The decoded JWT payload. Expected to contain 'sub' (userId) and 'username'.
+   * @returns The validated UserEntity (with actor relation loaded).
+   * @throws UnauthorizedException if the user is not found or validation fails.
    */
-  async validate(payload: any) {
-    this.logger.debug(`Validating JWT payload for subject (actor ID): '${payload.sub}'.`);
-    
-    // In a real application, you would typically fetch the user from the database
-    // based on the userId (payload.sub) to ensure the user still exists, is active,
-    // and to retrieve up-to-date user information.
-    const actor = await this.actorRepository.findOne({ where: { id: payload.sub } });
+  async validate(payload: { sub: string; username: string }): Promise<UserEntity> {
+    this.logger.debug(`Attempting to validate JWT payload for user: ${payload.username} (ID: ${payload.sub})`);
 
-    if (!actor) {
-      this.logger.warn(`JWT validation failed: Actor with ID '${payload.sub}' not found in database.`);
-      return null; // Authentication failed: actor not found
+    // Use AuthService to find the user by ID.
+    // AuthService.findUserById should now eagerly load the 'actor' relation.
+    const user = await this.authService.findUserById(payload.sub);
+
+    if (!user) {
+      this.logger.warn(`User with ID '${payload.sub}' (username: ${payload.username}) not found during JWT validation.`);
+      throw new UnauthorizedException('User not found.');
     }
 
-    this.logger.log(`JWT validated successfully for actor ID: '${payload.sub}', username: '${actor.preferredUsername}'.`);
-    // The validated payload (or a more complete user object) is attached to the request (req.user).
-    // This allows controllers and other guards/interceptors to easily access authenticated user data.
-    return { id: actor.id, username: actor.preferredUsername, activityPubId: actor.activityPubId };
+    // Log the successful validation.
+    this.logger.log(`JWT validated successfully for user: ${user.username} (ID: ${user.id}). Actor ID: ${user.actor?.activityPubId || 'N/A'}`);
+
+    // Return the full UserEntity. This object will be attached to `req.user`
+    // and can be accessed in controllers using `@UserDecorator() user: UserEntity`.
+    return user;
   }
 }

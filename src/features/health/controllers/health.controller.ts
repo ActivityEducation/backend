@@ -28,10 +28,10 @@ export class HealthController {
   async checkHealth() {
     this.logger.debug('Health check requested.');
     return this.health.check([
-      () => this.db.pingCheck('database'),
+      () => this.db.pingCheck('Database'),
       () =>
-        this.disk.checkStorage('storage', { path: '/', thresholdPercent: 0.5 }),
-      () => this.memory.checkHeap('memory_heap', 150 * 1024 * 1024),
+        this.disk.checkStorage('Storage', { path: '/', thresholdPercent: 0.75 }),
+      () => this.memory.checkHeap('Memory Heap', 0.5 * 1024 * 1024 * 1024),
       // () => this.redisIndicator.isHealthy('redis'),
     ]);
   }

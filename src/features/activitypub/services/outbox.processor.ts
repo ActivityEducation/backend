@@ -1,318 +1,267 @@
+// src/features/activitypub/services/outbox.processor.ts
+
+import { Injectable, Logger } from '@nestjs/common';
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
+import { ActorEntity } from '../entities/actor.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { randomUUID } from 'crypto'; // Import randomUUID for generating IDs
-import { ActivityEntity } from '../entities/activity.entity';
-import { ActorEntity } from '../entities/actor.entity';
-import { FollowEntity } from '../entities/follow.entity';
-import { AppService } from '../../../core/services/app.service';
-import { LoggerService } from 'src/shared/services/logger.service';
+import { KeyManagementService } from 'src/core/services/key-management.service';
+import { RemoteObjectService } from 'src/core/services/remote-object.service';
+// import * as HttpSignature from '@peertube/http-signature'; // REMOVED: No longer directly using HttpSignature.sign
+import * as jsonld from 'jsonld'; // For JSON-LD canonicalization
+import { ConfigService } from '@nestjs/config'; // For instance base URL
 
-@Processor('outbox') // Designates this class as a BullMQ processor for the 'outbox' queue
+/**
+ * OutboxProcessor
+ *
+ * This class serves as a BullMQ processor for the 'outbox' queue. It is responsible
+ * for consuming jobs from the outbox queue, signing outgoing ActivityPub activities,
+ * and dispatching them to the appropriate remote inboxes.
+ *
+ * It implements:
+ * - HTTP Signature generation for outgoing POST requests.
+ * - Discovery of recipient inboxes.
+ * - HTTP POST requests to remote inboxes.
+ * - Logging of dispatch steps and errors.
+ */
+@Processor('outbox')
 export class OutboxProcessor extends WorkerHost {
+  private readonly logger = new Logger(OutboxProcessor.name);
+  private readonly instanceBaseUrl: string;
+
   constructor(
-    @InjectRepository(ActivityEntity)
-    private readonly activityRepository: Repository<ActivityEntity>,
     @InjectRepository(ActorEntity)
     private readonly actorRepository: Repository<ActorEntity>,
-    @InjectRepository(FollowEntity)
-    private readonly followRepository: Repository<FollowEntity>,
-    private readonly appService: AppService, // Injects AppService for signing and caching
-    private readonly logger: LoggerService, // Injects custom logger
+    private readonly keyManagementService: KeyManagementService,
+    private readonly remoteObjectService: RemoteObjectService,
+    private readonly configService: ConfigService,
   ) {
     super();
-    this.logger.setContext('OutboxProcessor'); // Sets context for the logger
+    const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
+    if (!baseUrl) {
+      throw new Error('INSTANCE_BASE_URL is not defined in environment variables.');
+    }
+    this.instanceBaseUrl = baseUrl;
   }
 
   /**
-   * Delivers an outgoing ActivityPub activity to remote inboxes.
-   * This method performs the fan-out of activities, grouping deliveries by domain
-   * to leverage shared inboxes where available.
-   * @param job The BullMQ job containing the activity ID or the direct activity payload.
-   * @throws Error if delivery fails to any recipient, to trigger BullMQ retries.
+   * Processes a job from the 'outbox' queue.
+   * This method is automatically called by BullMQ when a new job is available.
+   *
+   * @param job The job object containing the activity payload and sender actor ID.
    */
-  async process(job: Job<any, any, string>): Promise<any> {
-    const { activityId, activity: directActivityPayload } = job.data;
+  async process(job: Job<any>): Promise<any> {
+    const { activity, actorId } = job.data; // activity is the full JSON-LD payload, actorId is local DB ID
+    const activityId = activity.id;
+    const activityType = activity.type;
+
     this.logger.log(
-      `Starting delivery for outbox activity job: '${job.id}', Activity ID: '${activityId || 'direct payload'}'.`,
+      `Processing outbox job ${job.id} for activity: ${activityId}, Type: ${activityType} from local actor ID: ${actorId}`,
     );
 
-    let activity: ActivityEntity;
-    let actor: ActorEntity;
-    let activityData: any;
-
-    // Determine if we're processing a stored activity or a direct payload
-    if (activityId) {
-      // Fetch the activity and its associated actor from the database
-      activity = await this.activityRepository.findOneOrFail({
-        where: { id: activityId },
-        relations: ['actor'],
-      });
-      if (!activity || !activity.actor) {
-        this.logger.error(
-          `Stored Activity (DB ID: '${activityId}') or its actor not found for delivery. Skipping delivery.`,
-        );
-        return; // Cannot proceed without activity or actor
-      }
-      activityData = activity.data;
-      actor = activity.actor;
-    } else if (directActivityPayload) {
-      // If a direct activity payload is provided (e.g., from a relay), use it.
-      activityData = directActivityPayload;
-      // Fetch the actor based on the actor ID in the payload
-      actor = await this.actorRepository.findOneOrFail({
-        where: { activityPubId: String(directActivityPayload.actor) },
-      });
-      if (!actor) {
-        this.logger.error(
-          `Actor '${directActivityPayload.actor}' for direct activity payload not found. Skipping delivery.`,
-        );
-        return;
-      }
-      // Ensure direct payloads have an ID for logging/tracking purposes if not already present
-      if (!activityData.id) activityData.id = `temp-id-${randomUUID()}`;
-      this.logger.debug(
-        `Delivering direct activity payload (Type: '${activityData.type}', Actor: '${activityData.actor}').`,
-      );
-    } else {
-      this.logger.error(
-        `No activityId or directActivityPayload provided for job '${job.id}'. Skipping delivery.`,
-      );
-      return;
+    const senderActor = await this.actorRepository.findOne({ where: { id: actorId } });
+    if (!senderActor) {
+      this.logger.error(`Sender actor with ID '${actorId}' not found for outbox job '${job.id}'.`);
+      throw new Error('Sender actor not found.');
     }
 
-    this.logger.debug(
-      `Activity to deliver (ID: '${activityData.id}', Type: '${activityData.type}').`,
-    );
-
-    // Map to store unique recipient inboxes (individual or shared) for delivery.
-    // Key: target_inbox_url, Value: Set<original_recipient_uris_for_logging>
-    const deliveryTargets = new Map<string, Set<string>>();
-
-    // Collect all potential recipient URIs from 'to', 'cc', 'bto', 'bcc', 'audience' fields.
-    // The 'audience' field is treated similarly to 'to' and 'cc' for delivery purposes.
-    const allRecipientUris = new Set<string>();
-    const addRecipient = (uriOrArray: string | string[] | undefined) => {
-      if (Array.isArray(uriOrArray)) {
-        uriOrArray
-          .filter(Boolean)
-          .forEach((uri) => allRecipientUris.add(String(uri)));
-      } else if (typeof uriOrArray === 'string' && uriOrArray) {
-        allRecipientUris.add(String(uriOrArray));
-      }
-    };
-
-    addRecipient(activityData.to);
-    addRecipient(activityData.cc);
-    addRecipient(activityData.bto);
-    addRecipient(activityData.bcc);
-    addRecipient(activityData.audience); // Explicitly add audience field
-
-    // Handle 'Public' audience: expand to all followers of the actor who published the activity.
-    if (allRecipientUris.has('https://www.w3.org/ns/activitystreams#Public')) {
-      this.logger.log(
-        `Expanding 'Public' audience for activity '${activityData.id}'. Fetching followers of '${actor.activityPubId}'.`,
-      );
-      // Fetch only accepted followers
-      const followers = await this.followRepository.find({
-        where: {
-          followedActivityPubId: actor.activityPubId,
-          status: 'accepted',
-        },
-      });
-      followers.forEach((f) => allRecipientUris.add(f.followerActivityPubId));
-      allRecipientUris.delete('https://www.w3.org/ns/activitystreams#Public'); // Remove public URI as it's expanded
+    const privateKeyPem = await this.keyManagementService.getPrivateKey(senderActor.id);
+    if (!privateKeyPem) {
+      this.logger.error(`Private key not found for actor '${senderActor.activityPubId}'. Cannot sign activity.`);
+      throw new Error('Private key not found.');
     }
 
-    // Group recipients by domain to determine whether to use a shared inbox or individual inboxes.
-    const domainsToDeliver = new Map<string, Set<string>>(); // Key: domain, Value: Set<actor_activitypub_id>
+    // Determine recipients
+    const recipients: string[] = [];
 
-    for (const recipientUri of allRecipientUris) {
-      try {
-        const url = new URL(recipientUri);
-        const domain = url.hostname;
-        // Skip our own domain to prevent self-delivery loops.
-        if (domain === new URL(this.appService['instanceBaseUrl']).hostname) {
-          this.logger.debug(
-            `Skipping self-delivery for recipient: '${recipientUri}'.`,
-          );
-          continue;
-        }
-        if (!domainsToDeliver.has(domain)) {
-          domainsToDeliver.set(domain, new Set<string>());
-        }
-        domainsToDeliver?.get(domain)?.add(recipientUri);
-      } catch (e) {
-        this.logger.warn(
-          `Invalid recipient URI found: '${recipientUri}'. Skipping this recipient.`,
-        );
-      }
-    }
+    // 'to', 'cc', 'bto', 'bcc', 'audience' fields
+    const directRecipients = [
+      ...(Array.isArray(activity.to) ? activity.to : [activity.to]),
+      ...(Array.isArray(activity.cc) ? activity.cc : [activity.cc]),
+      ...(Array.isArray(activity.bto) ? activity.bto : [activity.bto]),
+      ...(Array.isArray(activity.bcc) ? activity.bcc : [activity.bcc]),
+      ...(Array.isArray(activity.audience) ? activity.audience : [activity.audience]),
+    ].filter(Boolean); // Remove null/undefined entries
 
-    // For each unique domain, determine the target inbox URL (shared or individual).
-    for (const [domain, actorUrisOnDomain] of domainsToDeliver.entries()) {
-      // Use AppService's method for shared inbox discovery and caching
-      const sharedInboxUrl = await this.appService.getDomainSharedInbox(domain);
-      if (sharedInboxUrl) {
-        // If a shared inbox is found for the domain, use it for all actors on this domain.
-        if (!deliveryTargets.has(sharedInboxUrl)) {
-          deliveryTargets.set(sharedInboxUrl, new Set<string>());
+    // Filter out 'Public' collection URI from direct recipients if not explicitly sending to it
+    const publicUri = 'https://www.w3.org/ns/activitystreams#Public';
+    const isPublic = directRecipients.includes(publicUri);
+    const filteredDirectRecipients = directRecipients.filter(uri => uri !== publicUri);
+
+    // If activity is public, send to followers' inboxes
+    if (isPublic) {
+      if (senderActor.followersUrl) {
+        const followersCollection = await this.remoteObjectService.getActorFollowers(senderActor.followersUrl);
+        if (followersCollection && Array.isArray(followersCollection.orderedItems)) {
+          followersCollection.orderedItems.forEach(followerUri => {
+            if (!recipients.includes(followerUri)) {
+              recipients.push(followerUri);
+            }
+          });
+          this.logger.debug(`Activity is public. Added ${followersCollection.orderedItems.length} followers as recipients.`);
+        } else {
+          this.logger.warn(`Public activity but no followers found or followers collection malformed for actor ${senderActor.activityPubId}.`);
         }
-        actorUrisOnDomain.forEach((uri) =>
-          deliveryTargets?.get(sharedInboxUrl)?.add(uri),
-        );
-        this.logger.debug(
-          `Using shared inbox '${sharedInboxUrl}' for domain '${domain}' (recipients: ${Array.from(actorUrisOnDomain).join(', ')}).`,
-        );
       } else {
-        // If no shared inbox, deliver to each individual inbox on that domain.
-        for (const actorUri of actorUrisOnDomain) {
-          // Use AppService's method for individual inbox discovery and caching
-          const individualInboxUrl =
-            await this.appService.getRemoteActorInbox(actorUri);
-          if (individualInboxUrl) {
-            if (!deliveryTargets.has(individualInboxUrl)) {
-              deliveryTargets.set(individualInboxUrl, new Set<string>());
-            }
-            deliveryTargets?.get(individualInboxUrl)?.add(actorUri);
-            this.logger.debug(
-              `Using individual inbox '${individualInboxUrl}' for actor '${actorUri}' on domain '${domain}'.`,
-            );
-          } else {
-            this.logger.warn(
-              `Could not resolve individual inbox for actor '${actorUri}' on domain '${domain}'. Skipping delivery to this actor.`,
-            );
-          }
+        this.logger.warn(`Public activity but senderActor.followersUrl is undefined for actor ${senderActor.activityPubId}. Cannot fetch followers.`);
+      }
+    }
+
+    // Add direct recipients (excluding 'Public')
+    filteredDirectRecipients.forEach(recipient => {
+        if (!recipients.includes(recipient)) {
+            recipients.push(recipient);
         }
-      }
-    }
-
-    // IMPORTANT SECURITY WARNING:
-    // The `actor.privateKeyPem` is used here for signing. In a production environment, this private key
-    // should be accessed from a secure Key Management System (KMS) at runtime, not directly
-    // from the `ActorEntity` if it's stored in the database or environment variables.
-    // This is a critical security vulnerability if private keys are compromised.
-    const actorPrivateKeyPem = actor.privateKeyPem;
-    if (!actorPrivateKeyPem) {
-      this.logger.error(
-        `Private key not found for actor '${actor.activityPubId}'. Cannot sign outgoing activity. Skipping delivery.`,
-      );
-      // Production Grade Improvement: Implement a robust alert system for missing private keys in production.
-      // This is a critical security and operational failure point.
-      return; // Cannot proceed without a private key for signing
-    }
-
-    const activityBodyString = JSON.stringify(activityData);
-    const deliveryPromises: Promise<void>[] = [];
-
-    if (deliveryTargets.size === 0) {
-      this.logger.log(
-        `No valid delivery targets found for activity '${activityData.id}'. No deliveries will be attempted.`,
-      );
-    }
-
-    // Iterate over all determined delivery targets and send the activity.
-    for (const [
-      targetInboxUrl,
-      originalRecipientUris,
-    ] of deliveryTargets.entries()) {
-      deliveryPromises.push(
-        (async () => {
-          this.logger.log(
-            `Attempting to deliver activity '${activityData.id}' to '${targetInboxUrl}' (original recipients: ${Array.from(originalRecipientUris).join(', ')}).`,
-          );
-
-          try {
-            // Sign the outgoing HTTP request using AppService
-            const { date, digest, signatureHeader } =
-              this.appService.signActivity(
-                actor,
-                targetInboxUrl,
-                'POST',
-                activityBodyString,
-              );
-
-            this.logger.debug(
-              `Sending POST request to '${targetInboxUrl}' with signature: ${signatureHeader.substring(0, 100)}...`,
-            ); // Log truncated signature for brevity
-
-            // Send the POST request with the signed headers
-            const response = await fetch(targetInboxUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/activity+json', // Standard ActivityPub content type
-                Accept: 'application/activity+json, application/ld+json', // Accept ActivityPub JSON-LD
-                Date: date, // Date header for signature
-                Digest: digest, // Digest header for body integrity
-                Signature: signatureHeader, // The HTTP Signature
-              },
-              body: activityBodyString, // The ActivityPub payload
-            });
-
-            if (!response.ok) {
-              const errorBody = await response.text();
-              this.logger.error(
-                `Failed to deliver activity '${activityData.id}' to '${targetInboxUrl}'. Remote inbox responded with error: ${response.status} ${response.statusText} - Body: ${errorBody}.`,
-              );
-              throw new Error(
-                `Failed to deliver activity to ${targetInboxUrl}`,
-              ); // Throw error to trigger BullMQ retry
-            }
-
-            this.logger.log(
-              `Successfully delivered activity '${activityData.id}' to '${targetInboxUrl}'.`,
-            );
-          } catch (error) {
-            this.logger.error(
-              `Error delivering activity '${activityData.id}' to '${targetInboxUrl}': ${error.message}.`,
-              error.stack,
-            );
-            throw error; // Re-throw to allow BullMQ to handle retries for transient network issues or remote server errors
-          }
-        })(),
-      );
-    }
-
-    // Wait for all deliveries to complete or fail. If any promise in the array is rejected,
-    // `Promise.allSettled` will still resolve, but we can check the status of each.
-    // If any delivery fails, BullMQ will retry the entire job (based on queue configuration).
-    const results = await Promise.allSettled(deliveryPromises);
-    results.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        // Log the reason for each failed delivery promise.
-        // The overall job will be marked as failed by BullMQ if any promise rejected.
-        this.logger.error(
-          `Delivery promise ${index} failed for job '${job.id}': ${result.reason}`,
-        );
-      }
     });
 
-    this.logger.log(
-      `Finished processing delivery job for activity '${activityData.id}'.`,
-    );
-  }
+    // If the object of the activity has an 'attributedTo' (e.g., a reply),
+    // ensure the attributedTo actor's inbox is also a recipient.
+    if (activity.object && typeof activity.object === 'object' && activity.object.attributedTo) {
+      const attributedToActorUri = activity.object.attributedTo;
+      if (typeof attributedToActorUri === 'string' && attributedToActorUri !== senderActor.activityPubId) {
+        recipients.push(attributedToActorUri);
+      }
+    } else if (typeof activity.object === 'string') {
+      // If object is just a URI, try to resolve its attributedTo
+      const remoteObject = await this.remoteObjectService.fetchRemoteObject(activity.object).catch(e => {
+        this.logger.warn(`Failed to fetch remote object ${activity.object} to find attributedTo for dispatch: ${e.message}`);
+        return null;
+      });
+      if (remoteObject && remoteObject.attributedTo && typeof remoteObject.attributedTo === 'string' && remoteObject.attributedTo !== senderActor.activityPubId) {
+        recipients.push(remoteObject.attributedTo);
+      }
+    }
 
-  // BullMQ Worker Event Handlers: Provide visibility into job lifecycle
-  @OnWorkerEvent('completed')
-  onCompleted(job: Job) {
-    this.logger.log(
-      `BullMQ Job '${job.id}' of type '${job.name}' completed successfully.`,
-    );
+
+    if (recipients.length === 0) {
+      this.logger.warn(`No recipients found for activity '${activityId}'. Skipping dispatch.`);
+      return { status: 'skipped', reason: 'no recipients' };
+    }
+
+    // Canonicalize the JSON-LD payload
+    let canonicalizedActivity: string;
+    try {
+      canonicalizedActivity = await jsonld.canonize(activity, { algorithm: 'URDNA2015', format: 'application/n-quads' });
+      this.logger.debug(`Canonicalized activity (N-Quads): ${canonicalizedActivity}`);
+    } catch (e) {
+      this.logger.error(`Failed to canonicalize activity '${activityId}': ${e.message}`, e.stack);
+      throw new Error(`Failed to canonicalize activity: ${e.message}`);
+    }
+
+
+    const inboxUrlsToDeliver: Set<string> = new Set();
+    for (const recipientUri of recipients) {
+      try {
+        const actorProfile = await this.remoteObjectService.fetchRemoteObject(recipientUri);
+        if (actorProfile && actorProfile.inbox) {
+          inboxUrlsToDeliver.add(actorProfile.inbox);
+        } else {
+          this.logger.warn(`Could not resolve inbox for recipient: ${recipientUri}. Actor profile or inbox URL missing.`);
+        }
+      } catch (error) {
+        this.logger.warn(`Error resolving inbox for ${recipientUri}: ${error.message}`);
+      }
+    }
+
+    if (inboxUrlsToDeliver.size === 0) {
+      this.logger.warn(`No resolvable inboxes for activity '${activityId}'. Skipping dispatch.`);
+      return { status: 'skipped', reason: 'no resolvable inboxes' };
+    }
+
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const inboxUrl of Array.from(inboxUrlsToDeliver)) {
+      try {
+        this.logger.log(`Attempting to deliver activity '${activityId}' to inbox: ${inboxUrl}`);
+
+        const date = new Date().toUTCString();
+        const activityString = JSON.stringify(activity);
+        const digest = this.keyManagementService.generateDigest(activityString);
+
+        // Headers to be included in the request and signed
+        // FIX: Ensure header keys are lowercase for consistency with createSigningString's lookup
+        const requestHeaders: Record<string, string> = {
+          'host': new URL(inboxUrl).host,
+          'date': date,
+          'content-type': 'application/activity+json',
+          'digest': digest,
+        };
+
+        // Headers that will form the signing string
+        const headersToSign = ['(request-target)', 'host', 'date', 'digest'];
+
+        // Generate the signing string using our custom helper
+        const signingString = this.keyManagementService.createSigningString(
+          requestHeaders, // Pass the lowercase-keyed headers
+          headersToSign,
+          'POST', // Method
+          inboxUrl, // Full URL for (request-target)
+        );
+
+        // Sign the string using Node.js crypto
+        const signature = this.keyManagementService.signString(
+          signingString,
+          privateKeyPem,
+          'rsa-sha256', // Algorithm
+        );
+
+        // Construct the full Signature header value
+        const signatureHeaderValue = `keyId="${senderActor.activityPubId}#main-key",algorithm="rsa-sha256",headers="${headersToSign.join(' ')}",signature="${signature}"`;
+
+        // Add the Signature header to the request headers (can be PascalCase for actual HTTP request)
+        requestHeaders['Signature'] = signatureHeaderValue;
+        requestHeaders['User-Agent'] = `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`;
+
+        this.logger.debug(`Dispatching signed activity to ${inboxUrl} with headers: ${JSON.stringify(requestHeaders)}`);
+
+        const response = await this.remoteObjectService.postSignedActivity(
+          senderActor.id, // Internal actor ID
+          inboxUrl, // Target inbox URL
+          activity, // Activity payload
+          requestHeaders // Complete headers including signature
+        );
+
+        if (response && response.status >= 200 && response.status < 300) {
+          this.logger.log(`Successfully delivered activity '${activityId}' to ${inboxUrl}. Status: ${response.status}`);
+          successCount++;
+        } else {
+          this.logger.error(
+            `Failed to deliver activity '${activityId}' to ${inboxUrl}. Status: ${response?.status} ${response?.statusText || 'Unknown Error'}`,
+          );
+          failureCount++;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Exception during delivery of activity '${activityId}' to ${inboxUrl}: ${error.message}`,
+          error.stack,
+        );
+        failureCount++;
+      }
+    }
+
+    if (failureCount > 0) {
+      this.logger.error(
+        `Outbox job ${job.id} for activity '${activityId}' completed with ${successCount} successes and ${failureCount} failures.`,
+      );
+      throw new Error(`Failed to deliver activity to ${failureCount} inboxes.`);
+    }
+
+    this.logger.log(`Outbox job ${job.id} for activity '${activityId}' completed successfully.`);
+    return { status: 'completed', deliveredTo: successCount };
   }
 
   @OnWorkerEvent('failed')
-  onFailed(job: Job, err: Error) {
+  onFailed(job: Job<any>, error: Error) {
     this.logger.error(
-      `BullMQ Job '${job.id}' of type '${job.name}' failed with error: ${err.message}. Attempts made: ${job.attemptsMade}.`,
-      err.stack,
+      `Outbox job ${job.id} failed for activity '${job.data.activity.id}': ${error.message}`,
+      error.stack,
     );
   }
 
-  @OnWorkerEvent('active')
-  onActive(job: Job) {
-    this.logger.debug(
-      `BullMQ Job '${job.id}' of type '${job.name}' is now active.`,
-    );
+  @OnWorkerEvent('completed')
+  onCompleted(job: Job<any>) {
+    this.logger.log(`Outbox job ${job.id} for activity '${job.data.activity.id}' completed.`);
   }
 }

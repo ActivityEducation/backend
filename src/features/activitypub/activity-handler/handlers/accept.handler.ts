@@ -18,6 +18,8 @@ export class AcceptHandler implements IActivityHandler {
   }
 
   async handleInbox(activity: any): Promise<void> {
+    this.logger.debug(`Received Accept activity: ${JSON.stringify(activity)}`);
+
     const actorActivityPubId = String(activity.actorActivityPubId);
     const objectActivityPubId =
       typeof activity.objectActivityPubId === 'string'

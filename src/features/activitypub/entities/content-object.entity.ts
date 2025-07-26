@@ -1,39 +1,54 @@
-import { Entity, PrimaryGeneratedColumn, Column, Index, ManyToOne, JoinColumn } from 'typeorm';
-import { ActorEntity } from './actor.entity'; // Import ActorEntity for potential relationship (attributedTo)
+// src/features/activitypub/entities/content-object.entity.ts
 
-@Entity('content_objects') // Defines this class as a TypeORM entity mapped to the 'content_objects' table
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  Index,
+  ManyToOne,
+  JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
+import { ActorEntity } from './actor.entity'; // Import ActorEntity
+
+/**
+ * Represents a generic ActivityPub content object (e.g., Note, Article, Image, Video, edu:Flashcard, etc.).
+ * This entity is used to store both locally created and remotely fetched content objects
+ * to maintain a local cache and relationships.
+ */
+@Entity('content_objects')
 export class ContentObjectEntity {
-  @PrimaryGeneratedColumn('uuid') // Primary key, auto-generated as a UUID
-  id: string;
+  @PrimaryGeneratedColumn('uuid')
+  id: string; // Internal UUID for the database record
 
-  @Column({ unique: true }) // The ActivityPub 'id' URI for the content object, must be unique globally
-  @Index({ unique: true }) // Creates a unique database index on this column for efficient lookups
-  activityPubId: string;
+  @Column({ unique: true })
+  @Index({ unique: true })
+  activityPubId: string; // The canonical ActivityPub URI of the object (e.g., https://example.com/notes/123)
 
-  @Column() // The type of the content object (e.g., 'Note', 'Image', 'Video', 'Article', 'Question')
-  type: string;
+  @Column()
+  type: string; // The ActivityStreams type of the object (e.g., 'Note', 'Image', 'edu:Flashcard')
 
-  @Column({ type: 'text', nullable: true }) // The ActivityPub URI of the actor who attributed this content (e.g., the author)
-  attributedToActivityPubId: string;
+  @Column({ type: 'text', nullable: true })
+  attributedToActivityPubId: string; // The ActivityPub ID of the actor who created/attributed this object
 
-  @Column({ type: 'text', nullable: true }) // The ActivityPub URI of the object this content is in reply to (for replies)
-  inReplyToActivityPubId?: string;
+  @ManyToOne(() => ActorEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'attributedToActivityPubId', referencedColumnName: 'activityPubId' })
+  attributedTo: ActorEntity; // Relationship to the local ActorEntity if the creator is local
 
-  @Column({ type: 'text', nullable: true }) // URL for the collection of shares (Announce activities) for this object
-  // This could be used to track how many times an object has been announced/re-shared.
-  sharesCollectionId?: string;
+  @Column({ type: 'text', nullable: true })
+  inReplyToActivityPubId?: string; // The ActivityPub ID of the object this is a reply to
 
-  @Column({ type: 'jsonb' }) // JSONB column to store the full ActivityPub JSON-LD payload of the content object
-  // This provides schema flexibility for various content object types and their properties.
-  data: any;
+  // Added to explicitly store the 'updated' timestamp from the ActivityPub object
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  activityPubUpdatedAt?: Date; // Timestamp from the ActivityPub 'updated' property on the object
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
-  createdAt: Date; // Timestamp for when the content object record was created
+  @Column({ type: 'jsonb' })
+  data: object; // The full JSON-LD payload of the ActivityPub object
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP' })
-  updatedAt: Date; // Timestamp for the last update to the content object record
+  @CreateDateColumn()
+  createdAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true }) // Soft delete timestamp. If set, the object is considered "deleted"
-  // but not physically removed. Useful for `Delete` activities in ActivityPub.
-  deletedAt?: Date;
+  @UpdateDateColumn()
+  updatedAt: Date; // TypeORM's internal update timestamp for the entity record
 }
