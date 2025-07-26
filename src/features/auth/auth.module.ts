@@ -6,68 +6,49 @@ import { AuthController } from './auth.controller';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { JwtStrategy } from './strategies/jwt.strategy'; // Path updated to be within auth feature
+import { JwtStrategy } from './strategies/jwt.strategy';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ActorEntity } from '../activitypub/entities/actor.entity'; // Path updated to activitypub feature
-import { CommonModule } from '../../shared/common.module'; // Import CommonModule for shared services like
+import { ActorEntity } from '../activitypub/entities/actor.entity';
+import { CommonModule } from '../../shared/common.module';
 import { CoreModule } from 'src/core/core.module';
 import { ModerationModule } from '../moderation/moderation.module';
 import { UserEntity } from './entities/user.entity';
 import { ActivityPubModule } from '../activitypub/activitypub.module';
+import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard'; // NEW: Import JwtAuthGuard
 
-/**
- * AuthModule
- *
- * This module handles all authentication-related functionalities, including
- * user registration, login, and JWT token management.
- *
- * It imports:
- * - TypeOrmModule.forFeature: To register ActorEntity for user authentication.
- * - PassportModule: For Passport.js integration.
- * - JwtModule.registerAsync: To configure JWT token generation and verification
- * using the JWT secret from ConfigService.
- * - ConfigModule: To ensure ConfigService is available for JwtModule configuration.
- * other shared guards or services needed for authentication.
- *
- * It provides:
- * - AuthService: The main authentication service.
- * - JwtStrategy: The custom JWT Passport strategy.
- *
- * It exports:
- * - AuthService: If other modules need to use its authentication logic.
- *
- * Note: Entities like ActivityEntity, FollowEntity, ContentObjectEntity, LikeEntity,
- * and BlockEntity have been moved to the ActivityPubModule as they are specific
- * to the ActivityPub domain, not core authentication.
- */
 @Module({
   imports: [
-    forwardRef(() => CoreModule), // Use forwardRef if this module is imported in a circular dependency scenario
-    forwardRef(() => ModerationModule), 
+    forwardRef(() => CoreModule),
+    forwardRef(() => ModerationModule),
     forwardRef(() => ActivityPubModule),
-    // Register ActorEntity with TypeORM for use in AuthService
+    // Register ActorEntity and UserEntity with TypeORM for use in AuthService
     TypeOrmModule.forFeature([
       ActorEntity,
       UserEntity
     ]),
-    PassportModule, // Initialize Passport module
+    PassportModule,
     // Configure JwtModule asynchronously to load JWT secret from ConfigService
     JwtModule.registerAsync({
-      imports: [ConfigModule], // Import ConfigModule to access ConfigService
-      inject: [ConfigService], // Inject ConfigService
+      imports: [ConfigModule],
+      inject: [ConfigService],
       useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'), // Get JWT secret from environment
-        signOptions: { expiresIn: '60m' }, // Token expiration time (e.g., 60 minutes)
+        secret: configService.get<string>('JWT_SECRET'),
+        signOptions: { expiresIn: '60m' },
       }),
     }),
-    ConfigModule, // Import ConfigModule to ensure ConfigService is available
+    ConfigModule,
     CommonModule,
   ],
   providers: [
-    AuthService, // Authentication service
-    JwtStrategy, // JWT Passport strategy
+    AuthService,
+    JwtStrategy,
+    JwtAuthGuard, // NEW: Provide JwtAuthGuard here
   ],
-  controllers: [AuthController], // Register authentication controller
-  exports: [AuthService], // Export AuthService if other modules need to use its authentication logic
+  controllers: [AuthController],
+  exports: [
+    AuthService,
+    JwtAuthGuard, // NEW: Export JwtAuthGuard here
+    JwtModule, // Export JwtModule if other modules need to verify tokens
+  ],
 })
 export class AuthModule {}

@@ -24,10 +24,11 @@ import { ModerationModule } from 'src/features/moderation/moderation.module';
 import { UndoHandler } from './handlers/undo.handler';
 import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.entity';
 import { EducationPubModule } from 'src/features/educationpub/educationpub.module';
+import { CommonModule } from 'src/shared/common.module'; // NEW: Import CommonModule
 
 @Module({
   imports: [
-    // CoreModule,
+    // CoreModule, // This is imported via forwardRef below
     ModerationModule,
     TypeOrmModule.forFeature([
       ActorEntity,
@@ -41,6 +42,7 @@ import { EducationPubModule } from 'src/features/educationpub/educationpub.modul
     forwardRef(() => CoreModule),
     forwardRef(() => EducationPubModule),
     DiscoveryModule,
+    CommonModule, // NEW: Explicitly import CommonModule to provide LoggerService
   ],
   providers: [
     HandlerDiscoveryService,
