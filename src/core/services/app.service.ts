@@ -77,18 +77,50 @@ export class AppService {
   }
 
   /**
-   * Retrieves an actor's profile data.
-   *
+   * Retrieves an ActivityPub compliant actor profile for a given username.
+   * This constructs the JSON-LD representation of the actor.
    * @param username The preferred username of the actor.
-   * @returns The actor entity.
+   * @returns The actor's profile data, including their public key.
    */
-  async getActorProfile(username: string): Promise<ActorEntity> {
-    this.logger.debug(`Fetching actor profile for username: ${username}`);
+  async getActorProfile(username: string): Promise<{ data: object }> {
+    this.logger.log(`Fetching actor profile for username: ${username}`);
     const actor = await this.actorRepository.findOne({ where: { preferredUsername: username } });
+    
     if (!actor) {
+      this.logger.warn(`Actor profile: Actor '${username}' not found.`);
       throw new NotFoundException(`Actor with username '${username}' not found.`);
     }
-    return actor;
+
+    // Construct the ActivityPub 'as:Person' object
+    const actorProfile: any = {
+      '@context': [
+        'https://www.w3.org/ns/activitystreams',
+        'https://w3id.org/security/v1', // For public key
+      ],
+      id: actor.activityPubId,
+      type: 'Person', // Or 'Application', etc. based on actor type
+      preferredUsername: actor.preferredUsername,
+      name: actor.name || actor.preferredUsername,
+      summary: actor.summary,
+      inbox: actor.inbox,
+      outbox: actor.outbox,
+      followers: actor.followersUrl, // Link to followers collection
+      following: actor.followingUrl, // Link to following collection
+      liked: actor.likedUrl, // Link to liked collection
+      // Public key for HTTP Signatures
+      publicKey: {
+        id: `${actor.activityPubId}#main-key`, // Unique ID for the public key
+        owner: actor.activityPubId, // Owner of the public key
+        publicKeyPem: actor.publicKeyPem, // The PEM-encoded public key
+      },
+      url: actor.activityPubId, // Canonical URL of the actor
+      // Add other ActivityPub properties as needed, e.g., icon, image, endpoints
+      endpoints: {
+        sharedInbox: `${this.instanceBaseUrl}/inbox`, // Common inbox for instances
+      },
+    };
+
+    return { data: actorProfile };
   }
 
   /**

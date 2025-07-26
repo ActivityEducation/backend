@@ -43,10 +43,9 @@ export class AuthController {
   })
   @ApiResponse({ status: 400, description: 'Bad Request (validation errors).' })
   @ApiResponse({ status: 409, description: 'Conflict (username already exists).' })
-  async register(@Body() registerDto: RegisterDto): Promise<UserEntity> {
+  async register(@Body() registerDto: RegisterDto): Promise<UserEntity | null> {
     this.logger.log(`Received registration request for username: ${registerDto.username}`);
-    const { user } = await this.authService.register(registerDto);
-    return user;
+    return this.authService.register(registerDto);
   }
 
   @Post('login')
@@ -67,7 +66,13 @@ export class AuthController {
   async login(@Body() loginDto: LoginDto, @Request() req: any) {
     this.logger.log(`Login attempt for username: ${loginDto.username}`);
     // Passport local strategy would have authenticated the user and attached to req.user
-    return this.authService.login(loginDto);
+    const user = await this.authService.validateUser(loginDto.username, loginDto.password);
+    
+    if (!user) {
+      throw new Error('Invalid credentials');
+    }
+
+    return this.authService.login(user!);
   }
 
   @Get('profile')

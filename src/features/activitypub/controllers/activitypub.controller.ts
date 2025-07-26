@@ -21,6 +21,7 @@ import { HttpSignatureVerificationGuard } from 'src/shared/guards/http-signature
 import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
 import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
 import { LoggerService } from 'src/shared/services/logger.service';
+import { ActorEntity } from '../entities/actor.entity';
 
 @Controller()
 export class ActivityPubController {
@@ -34,10 +35,24 @@ export class ActivityPubController {
   // Actor profile endpoint: GET /api/actors/:username
   @Get('actors/:username')
   @Header('Content-Type', 'application/activity+json') // Specify ActivityPub JSON-LD content type
-  async getActor(@Param('username') username: string) {
+  async getActor(@Param('username') username: string, @Req() req: Request) {
     this.logger.log(`Fetching actor profile for username: '${username}'.`);
-    const actorData = await this.appService.getActorProfile(username); // Calls getActorProfile
-    return actorData.data; // Return the full ActivityPub profile
+    const actorData = await this.appService.getActorProfile(username);
+
+    const acceptHeader = req.headers['accept'] || '';
+    this.logger.debug(`Accept header for actor profile: ${acceptHeader}`);
+
+    if (acceptHeader.includes('application/activity+json') || acceptHeader.includes('application/ld+json')) {
+      req.res?.setHeader('Content-Type', 'application/activity+json');
+      return actorData.data; // Return the full ActivityPub profile
+    } else {
+      req.res?.setHeader('Content-Type', 'application/json');
+      // For plain JSON, optionally remove ActivityPub specific contexts/keys
+      const plainActorData: any = { ...actorData.data };
+      delete plainActorData['@context'];
+      delete plainActorData.publicKey;
+      return plainActorData;
+    }
   }
 
   // Actor inbox endpoint: POST /api/actors/:username/inbox
@@ -62,7 +77,7 @@ export class ActivityPubController {
   async outbox(
     @Param('username') username: string,
     @Activity() activity: any,
-    @User('id') localActorId: string,
+    @User('actor.activityPubId') localActorId: string,
   ) {
     this.logger.log(
       `Incoming outbox post for '${username}' by authenticated user ID: '${localActorId}'. Activity Type: '${activity.type || 'N/A'}'.`,
@@ -122,7 +137,6 @@ export class ActivityPubController {
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('perPage', new DefaultValuePipe(10), ParseIntPipe) perPage: number,
-    @User('id') authenticatedUserId: string, // Keep for authorization check in service
   ) {
     this.logger.log(
       `Fetching outbox for '${username}'. Page: ${page}, PerPage: ${perPage}.`,
@@ -138,7 +152,6 @@ export class ActivityPubController {
     @Param('username') username: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('perPage', new DefaultValuePipe(10), ParseIntPipe) perPage: number,
-    @User('id') authenticatedUserId: string, // Keep for authorization check in service
   ) {
     this.logger.log(
       `Fetching inbox for '${username}'. Page: ${page}, PerPage: ${perPage}.`,

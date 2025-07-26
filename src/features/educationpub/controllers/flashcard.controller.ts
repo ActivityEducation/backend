@@ -125,7 +125,7 @@ export class EducationPubController {
   @ApiResponse({ status: 500, description: 'Internal server error.' })
   async createFlashcard(
     @Param('username') username: string,
-    @User('id') localActorId: string, // Get authenticated user's internal ID
+    @User('actor.activityPubId') localActorId: string, // Get authenticated user's internal ID
     @Body() createFlashcardPayload: CreateFlashcardPayload,
     @Query('isPublic', new DefaultValuePipe(false)) isPublicQuery: boolean, // Allow overriding for testing
   ): Promise<FlashcardEntity> {
@@ -151,7 +151,7 @@ export class EducationPubController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async updateFlashcard(
     @Param('id') id: string,
-    @User('id') localActorId: string,
+    @User('actor.activityPubId') localActorId: string,
     @Body() updateFlashcardDto: UpdateFlashcardDto,
   ): Promise<FlashcardEntity> {
     this.logger.log(`Received request to update flashcard ID: ${id} by actor ID: ${localActorId}`);
@@ -168,7 +168,7 @@ export class EducationPubController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async deleteFlashcard(
     @Param('id') id: string,
-    @User('id') localActorId: string,
+    @User('actor.activityPubId') localActorId: string,
   ): Promise<void> {
     this.logger.log(`Received request to delete flashcard ID: ${id} by actor ID: ${localActorId}`);
     await this.flashcardService.deleteFlashcard(id, localActorId);
@@ -185,7 +185,7 @@ export class EducationPubController {
   @ApiResponse({ status: 409, description: 'Conflict (already liked).' })
   async likeFlashcard(
     @Param('id') id: string,
-    @User('id') localActorId: string,
+    @User('actor.activityPubId') localActorId: string,
   ): Promise<{ message: string; liked: boolean }> {
     this.logger.log(`Actor ID '${localActorId}' attempting to like flashcard ID: ${id}`);
     return this.flashcardService.handleFlashcardLike(id, localActorId);
@@ -202,7 +202,7 @@ export class EducationPubController {
   @ApiResponse({ status: 409, description: 'Conflict (already boosted).' })
   async boostFlashcard(
     @Param('id') id: string,
-    @User('id') localActorId: string,
+    @User('actor.activityPubId') localActorId: string,
   ): Promise<{ message: string; boosted: boolean }> {
     this.logger.log(`Actor ID '${localActorId}' attempting to boost flashcard ID: ${id}`);
     return this.flashcardService.handleFlashcardBoost(id, localActorId);
