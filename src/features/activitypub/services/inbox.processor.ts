@@ -3,7 +3,7 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm'; // Import IsNull
+import { Repository, IsNull } from 'typeorm';
 import { ActivityEntity } from '../entities/activity.entity';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { ProcessedActivityEntity } from '../entities/processed-activity.entity';
@@ -58,7 +58,7 @@ export class InboxProcessor extends WorkerHost {
 
     this.logger.log(`Processing inbox job '${jobId}' for activity type: '${activityPayload.type}'.`);
 
-    let recipientActivityPubId: string | null = null; // Initialize as null
+    let recipientActivityPubId: string | null = null;
     if (localActorId) {
         try {
             const localActor = await this.actorService.findActorById(localActorId);
@@ -78,7 +78,6 @@ export class InboxProcessor extends WorkerHost {
       const existingProcessedActivity = await this.processedActivityRepository.findOne({
         where: {
           activityId: normalizeUrl(activityId),
-          // FIX: Use IsNull() when recipientActivityPubId is null, otherwise use the string value
           recipientActivityPubId: recipientActivityPubId === null ? IsNull() : recipientActivityPubId
         }
       });
@@ -89,17 +88,49 @@ export class InboxProcessor extends WorkerHost {
     }
 
     try {
-      const senderActorActivityPubId = actorActivityPubId || activityPayload.actor;
-      if (!senderActorActivityPubId) {
-        this.logger.warn(`Activity '${jobId}' missing 'actor' field. Cannot process without sender. Activity: ${JSON.stringify(activityPayload)}`);
-        throw new BadRequestException('Activity has no actor specified.');
+      // FIX: Robustly extract senderActorActivityPubId, checking both 'actor' and 'as:actor'
+      let senderActor: string | object | undefined = activityPayload.actor || activityPayload['as:actor'];
+      let senderActorActivityPubIdFinal: string;
+
+      if (typeof senderActor === 'string') {
+          senderActorActivityPubIdFinal = senderActor;
+      } else if (typeof senderActor === 'object' && senderActor !== null && (<any>senderActor).id) {
+          senderActorActivityPubIdFinal = (<any>senderActor).id;
+      } else {
+          this.logger.warn(`Activity '${jobId}' missing 'actor' or 'as:actor' field with valid ID. Activity: ${JSON.stringify(activityPayload)}`);
+          throw new BadRequestException('Activity has no actor specified.');
+      }
+
+
+      // FIX: Correctly extract objectActivityPubId for different activity types,
+      // especially for nested objects like in Undo activities.
+      let extractedObjectActivityPubId: string | undefined;
+      const activityObject = activityPayload.object || activityPayload['as:object']; // Prioritize 'object', fallback to 'as:object'
+
+      if (typeof activityObject === 'string') {
+        extractedObjectActivityPubId = activityObject;
+      } else if (typeof activityObject === 'object' && activityObject !== null) {
+        // For nested activities (like Undo's object), we need to go one level deeper
+        if (activityPayload.type === 'Undo' && activityObject.object) {
+            const undoneObject = activityObject.object;
+            if (typeof undoneObject === 'string') {
+                extractedObjectActivityPubId = undoneObject;
+            } else if (typeof undoneObject === 'object' && undoneObject !== null && undoneObject.id) {
+                extractedObjectActivityPubId = undoneObject.id;
+            } else if (typeof undoneObject === 'object' && undoneObject !== null && undoneObject.url) {
+                extractedObjectActivityPubId = undoneObject.url;
+            }
+        } else {
+            // For other objects that are embedded, try 'id' then 'url'
+            extractedObjectActivityPubId = activityObject.id || activityObject.url;
+        }
       }
 
       const newActivityRecord = this.activityRepository.create({
         activityPubId: normalizeUrl(activityPayload.id),
         type: activityPayload.type,
-        actorActivityPubId: normalizeUrl(senderActorActivityPubId),
-        objectActivityPubId: normalizeUrl(activityPayload.object?.id || activityPayload.object),
+        actorActivityPubId: normalizeUrl(senderActorActivityPubIdFinal), // Use the final extracted sender actor ID
+        objectActivityPubId: normalizeUrl(extractedObjectActivityPubId || ''), // Use the correctly extracted object ID
         data: activityPayload,
         recipientActivityPubId: recipientActivityPubId,
       });
@@ -113,8 +144,8 @@ export class InboxProcessor extends WorkerHost {
           localActorId: localActorId,
           activity: activityPayload,
           activityId: normalizeUrl(activityId),
-          actorActivityPubId: normalizeUrl(senderActorActivityPubId),
-          objectActivityPubId: normalizeUrl(activityPayload.object?.id || activityPayload.object),
+          actorActivityPubId: normalizeUrl(senderActorActivityPubIdFinal), // Pass the final extracted sender actor ID to handler
+          objectActivityPubId: normalizeUrl(extractedObjectActivityPubId || ''), // Pass the correctly extracted object ID to handler
         });
         this.logger.log(`Successfully handled inbox activity '${jobId}' of type '${activityPayload.type}'.`);
       } else {
@@ -124,7 +155,7 @@ export class InboxProcessor extends WorkerHost {
       if (activityId) {
         const processed = this.processedActivityRepository.create({
           activityId: normalizeUrl(activityId),
-          recipientActivityPubId: recipientActivityPubId // This is now correctly typed as string | null
+          recipientActivityPubId: recipientActivityPubId
         });
         await this.processedActivityRepository.save(processed);
         this.logger.debug(`Activity '${jobId}' marked as processed.`);

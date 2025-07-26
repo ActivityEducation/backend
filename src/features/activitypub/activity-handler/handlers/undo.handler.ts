@@ -11,6 +11,7 @@ import { LikeEntity } from 'src/features/activitypub/entities/like.entity';
 import { BlockEntity } from 'src/features/activitypub/entities/block.entity';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { BadRequestException } from '@nestjs/common';
+import { normalizeUrl } from 'src/shared/utils/url-normalizer';
 
 @ActivityHandler('Undo')
 export class UndoHandler implements IActivityHandler {
@@ -41,97 +42,117 @@ export class UndoHandler implements IActivityHandler {
 
     this.logger.log(`Handling 'Undo' activity from '${actorPerformingUndo}'.`);
 
-    // The 'object' of an Undo activity is typically the activity that is being undone.
-    // Ensure that 'mainActivity.object' is an object and contains necessary properties.
-    if (mainActivity.object && typeof mainActivity.object === 'object') {
-      const undoneActivity = mainActivity.object; // This is the original activity (e.g., a Follow or Like)
+    // FIX: Robustly extract the 'undoneActivity' from either 'object' or 'as:object'
+    const undoneActivity = mainActivity.object || mainActivity['as:object'];
 
+    if (undoneActivity && typeof undoneActivity === 'object') {
+      // FIX: Extract actor and object from the 'undoneActivity' (nested object), checking both forms
       const undoObjectType = undoneActivity.type;
-      const undoActor = undoneActivity.actor; // The actor of the *undone* activity (e.g., the follower in Undo Follow)
-      const undoObjectTarget = undoneActivity.object; // The object of the *undone* activity (e.g., the followed in Undo Follow)
 
-      // Validate that the actor performing the Undo is the same as the actor of the activity being undone.
-      // This is a security and logical check as per ActivityPub specifications for Undo.
-      if (String(undoActor) !== actorPerformingUndo) {
-        this.logger.warn(`Security check failed: Undo actor '${actorPerformingUndo}' does not match actor of undone activity '${undoActor}'. Skipping processing.`);
-        throw new BadRequestException('Undo actor and original activity actor are not the same. This is a potential security mismatch.');
+      // Robustly extract the actor's ActivityPub ID from the undone activity
+      let undoActorRaw = undoneActivity.actor || undoneActivity['as:actor'];
+      let undoActorActivityPubId: string; // Declared here
+      if (typeof undoActorRaw === 'string') {
+          undoActorActivityPubId = normalizeUrl(undoActorRaw);
+      } else if (typeof undoActorRaw === 'object' && undoActorRaw !== null && undoActorRaw.id) {
+          undoActorActivityPubId = normalizeUrl(undoActorRaw.id);
+      } else {
+          this.logger.warn(`UndoHandler: Could not extract actor ID from undone activity.actor: ${JSON.stringify(undoActorRaw)}`);
+          throw new BadRequestException('Could not extract actor ID from undone activity.');
       }
 
-      // Ensure extracted IDs are strings for repository lookups
-      const undoneActorActivityPubId = String(undoActor);
-      const undoneObjectActivityPubId = String(undoObjectTarget);
+      // Robustly extract the object's ActivityPub ID from the undone activity
+      let undoObjectRaw = undoneActivity.object || undoneActivity['as:object'] || undoneActivity.id || undoneActivity.url;
+      let undoneObjectActivityPubId: string; // Declared here
+      if (typeof undoObjectRaw === 'string') {
+          undoneObjectActivityPubId = normalizeUrl(undoObjectRaw);
+      } else if (typeof undoObjectRaw === 'object' && undoObjectRaw !== null && undoObjectRaw.id) {
+          undoneObjectActivityPubId = normalizeUrl(undoObjectRaw.id);
+      } else if (typeof undoObjectRaw === 'object' && undoObjectRaw !== null && undoObjectRaw.url) {
+          undoneObjectActivityPubId = normalizeUrl(undoObjectRaw.url);
+      } else {
+          this.logger.warn(`UndoHandler: Could not extract object ID from undone activity.object: ${JSON.stringify(undoObjectRaw)}`);
+          throw new BadRequestException('Could not extract object ID from undone activity.');
+      }
+
+      // Validate that the actor performing the Undo is the same as the actor of the activity being undone.
+      // FIX: Use undoActorActivityPubId consistently
+      if (undoActorActivityPubId !== normalizeUrl(actorPerformingUndo)) { // Compare normalized URLs
+        this.logger.warn(`Security check failed: Undo actor '${actorPerformingUndo}' does not match actor of undone activity '${undoActorActivityPubId}'. Skipping processing.`);
+        throw new BadRequestException('Undo actor and original activity actor are not the same. This is a potential security mismatch.');
+      }
 
       switch (undoObjectType) {
         case 'Follow':
           this.logger.log(
-            `Processing Undo Follow: '${undoneActorActivityPubId}' unfollowing '${undoneObjectActivityPubId}'.`,
+            `Processing Undo Follow: '${undoActorActivityPubId}' unfollowing '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
           );
           const resultFollow = await this.followRepository.delete({
-            followerActivityPubId: undoneActorActivityPubId,
+            followerActivityPubId: undoActorActivityPubId, // FIX: Use undoActorActivityPubId
             followedActivityPubId: undoneObjectActivityPubId,
           });
           if (resultFollow.affected && resultFollow.affected > 0) {
             this.logger.log(
-              `Removed Follow relationship: '${undoneActorActivityPubId}' is no longer following '${undoneObjectActivityPubId}'.`,
+              `Removed Follow relationship: '${undoActorActivityPubId}' is no longer following '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Follow, but relationship not found: '${undoneActorActivityPubId}' -> '${undoneObjectActivityPubId}'. No action taken.`,
+              `Attempted to Undo Follow, but relationship not found: '${undoActorActivityPubId}' -> '${undoneObjectActivityPubId}'. No action taken.`, // FIX: Use undoActorActivityPubId
             );
           }
           break;
         case 'Like':
           this.logger.log(
-            `Processing Undo Like: '${undoneActorActivityPubId}' unliking '${undoneObjectActivityPubId}'.`,
+            `Processing Undo Like: '${undoActorActivityPubId}' unliking '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
           );
           const resultLike = await this.likeRepository.delete({
-            likerActivityPubId: undoneActorActivityPubId,
+            likerActivityPubId: undoActorActivityPubId, // FIX: Use undoActorActivityPubId
             likedObjectActivityPubId: undoneObjectActivityPubId,
           });
           if (resultLike.affected && resultLike.affected > 0) {
             this.logger.log(
-              `Removed Like relationship: '${undoneActorActivityPubId}' no longer likes '${undoneObjectActivityPubId}'.`,
+              `Removed Like relationship: '${undoActorActivityPubId}' no longer likes '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Like, but relationship not found: '${undoneActorActivityPubId}' liked '${undoneObjectActivityPubId}'. No action taken.`,
+              `Attempted to Undo Like, but relationship not found: '${undoActorActivityPubId}' liked '${undoneObjectActivityPubId}'. No action taken.`, // FIX: Use undoActorActivityPubId
             );
           }
           break;
         case 'Announce':
           this.logger.log(
-            `Processing Undo Announce from '${undoneActorActivityPubId}' for object: '${undoneObjectActivityPubId}'.`,
+            `Processing Undo Announce from '${undoActorActivityPubId}' for object: '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
           );
           const resultAnnounce = await this.activityRepository.delete({
             type: 'Announce',
-            actorActivityPubId: undoneActorActivityPubId,
+            actorActivityPubId: undoActorActivityPubId, // FIX: Use undoActorActivityPubId
             objectActivityPubId: undoneObjectActivityPubId,
           });
           if (resultAnnounce.affected && resultAnnounce.affected > 0) {
             this.logger.log(
-              `Removed Announce activity: '${undoneActorActivityPubId}' no longer announces '${undoneObjectActivityPubId}'.`,
+              `Removed Announce activity: '${undoActorActivityPubId}' no longer announces '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Announce, but activity not found: '${undoneActorActivityPubId}' announced '${undoneObjectActivityPubId}'. No action taken.`,
+              `Attempted to Undo Announce, but activity not found: '${undoActorActivityPubId}' announced '${undoneObjectActivityPubId}'. No action taken.`, // FIX: Use undoActorActivityPubId
             );
           }
           break;
         case 'Block':
           this.logger.log(
-            `Processing Undo Block: '${undoneActorActivityPubId}' unblocking '${undoneObjectActivityPubId}'.`,
+            `Processing Undo Block: '${undoActorActivityPubId}' unblocking '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
           );
           const resultBlock = await this.blockRepository.delete({
-            blockerActivityPubId: undoneActorActivityPubId,
+            blockerActivityPubId: undoActorActivityPubId, // FIX: Use undoActorActivityPubId
             blockedActivityPubId: undoneObjectActivityPubId,
           });
           if (resultBlock.affected && resultBlock.affected > 0) {
             this.logger.log(
-              `Removed Block relationship: '${undoneActorActivityPubId}' no longer blocks '${undoneObjectActivityPubId}'.`,
+              `Removed Block relationship: '${undoActorActivityPubId}' no longer blocks '${undoneObjectActivityPubId}'.`, // FIX: Use undoActorActivityPubId
             );
           } else {
             this.logger.log(
-              `Attempted to Undo Block, but relationship not found: '${undoneActorActivityPubId}' blocked '${undoneObjectActivityPubId}'. No action taken.`,
+              `Attempted to Undo Block, but relationship not found: '${undoActorActivityPubId}' blocked '${undoneObjectActivityPubId}'. No action taken.`, // FIX: Use undoActorActivityPubId
             );
           }
           break;

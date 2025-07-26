@@ -11,6 +11,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { UserEntity } from '../../auth/entities/user.entity'; // Import UserEntity
+import { Exclude } from 'class-transformer'; // NEW: Import Exclude
 
 /**
  * Represents an ActivityPub Actor (e.g., as:Person, as:Application).
@@ -55,7 +56,9 @@ export class ActorEntity {
 
   // IMPORTANT: For production, privateKeyPem MUST be stored securely in a KMS like HashiCorp Vault.
   // For development, it's temporarily here. Ensure it's not exposed.
-  @Column({ type: 'text', nullable: true, select: false }) // 'select: false' prevents it from being loaded by default queries
+  // FIX: Re-added @Exclude() to prevent privateKeyPem from being returned in API responses.
+  @Column({ type: 'text', nullable: true })
+  @Exclude() // Exclude privateKeyPem from API responses
   privateKeyPem?: string; // PEM-encoded private key of the actor (for local actors)
 
   @Column({ default: true })

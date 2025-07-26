@@ -16,17 +16,18 @@ import {
 import { AppService } from 'src/core/services/app.service';
 import { Activity } from 'src/shared/decorators/activity.decorator';
 import { User } from 'src/shared/decorators/user.decorator';
-import { HttpSignatureVerificationGuard } from 'src/shared/guards/http-signature-verification.guard';
-import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
-import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { ActorEntity } from '../entities/actor.entity';
 import { Request } from 'express';
 import { ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { HttpSignatureVerificationGuard } from 'src/shared/guards/http-signature-verification.guard';
+import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
+import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
+import { ActivityPubActivityDto } from '../dto/activitypub-activity.dto';
 
 
 @ApiTags('ActivityPub')
-@Controller('api')
+@Controller()
 export class ActivityPubController {
   constructor(
     private readonly appService: AppService,
@@ -63,7 +64,8 @@ export class ActivityPubController {
   @HttpCode(HttpStatus.ACCEPTED) // Return 202 Accepted for asynchronous processing
   @Header('Content-Type', 'application/ld+json') // Specify JSON-LD content type
   @UseGuards(HttpSignatureVerificationGuard, RateLimitGuard) // Apply rate limiting to protect against abuse
-  async inbox(@Param('username') username: string, @Activity() activity: any) {
+  // FIX: Pass ActivityPubActivityDto to the @Activity() decorator for validation
+  async inbox(@Param('username') username: string, @Activity(ActivityPubActivityDto) activity: ActivityPubActivityDto) {
     this.logger.log(
       `Incoming inbox post for '${username}'. Activity Type: '${activity.type || 'N/A'}'.`,
     );
@@ -79,7 +81,7 @@ export class ActivityPubController {
   @UseGuards(JwtAuthGuard) // Require JWT authentication for local users posting to outbox
   async outbox(
     @Param('username') username: string,
-    @Activity() activity: any,
+    @Activity() activity: any, // This can remain 'any' or be a specific DTO for outgoing activities
     @User('actor.activityPubId') localActorId: string,
   ) {
     this.logger.log(
@@ -94,7 +96,8 @@ export class ActivityPubController {
   @HttpCode(HttpStatus.ACCEPTED) // Return 202 Accepted for asynchronous processing
   @Header('Content-Type', 'application/ld+json') // Specify JSON-LD content type
   @UseGuards(RateLimitGuard) // Apply rate limiting to protect against abuse
-  async relay(@Activity() activity: any, @Req() req: Request) {
+  // FIX: Pass ActivityPubActivityDto to the @Activity() decorator for validation
+  async relay(@Activity(ActivityPubActivityDto) activity: ActivityPubActivityDto, @Req() req: Request) {
     this.logger.log(
       `Incoming relay post. Activity Type: '${activity.type || 'N/A'}'.`,
     );

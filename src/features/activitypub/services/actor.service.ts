@@ -6,7 +6,7 @@ import { Repository } from 'typeorm';
 import { ActorEntity } from '../entities/actor.entity';
 import { UserEntity } from '../../auth/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
-import { RemoteObjectService } from 'src/core/services/remote-object.service'; // Import RemoteObjectService for fetching remote actor profiles
+import { RemoteObjectService } from 'src/core/services/remote-object.service';
 import { KeyManagementService } from 'src/core/services/key-management.service';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { normalizeUrl } from 'src/shared/utils/url-normalizer';
@@ -27,7 +27,7 @@ export class ActorService {
     private readonly keyManagementService: KeyManagementService,
     private readonly configService: ConfigService,
     private readonly logger: LoggerService,
-    private readonly remoteObjectService: RemoteObjectService, // Inject RemoteObjectService
+    private readonly remoteObjectService: RemoteObjectService,
   ) {
     this.logger.setContext('ActorService');
     const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
@@ -88,6 +88,10 @@ export class ActorService {
       isLocal: true,
       user: user, // Link to the user entity
     });
+
+    // DIAGNOSTIC LOG: Check privateKeyPem before saving
+    this.logger.debug(`ActorService: Private key PEM before saving: ${privateKeyPem ? 'PRESENT' : 'MISSING'}`);
+
 
     try {
       const savedActor = await this.actorRepository.save(newActor);
@@ -187,18 +191,54 @@ export class ActorService {
   }
 
   /**
-   * Finds a local actor by their preferred username.
+   * Finds a local actor by their internal database ID.
    *
-   * @param userId The preferred username of the local actor.
+   * @param userId The internal database ID of the local actor.
    * @returns The ActorEntity if found.
-   * @throws NotFoundException if no local actor with the given username exists.
+   * @throws NotFoundException if no local actor with the given ID exists.
    */
   async findActorForUser(userId: string): Promise<ActorEntity> {
-    this.logger.debug(`Searching for local actor by id: ${userId}`);
-    const actor = await this.actorRepository.findOne({ where: { id: userId, isLocal: true } });
-    if (!actor) {
-      throw new NotFoundException(`Local actor with id '${userId}' not found.`);
+    this.logger.debug(`Searching for local actor by user ID: ${userId}`);
+    // FIX: Correctly find the actor by linking through the UserEntity's actorId
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      relations: ['actor'], // Ensure the actor relation is loaded
+    });
+
+    if (!user || !user.actor) {
+      this.logger.warn(`User with ID '${userId}' not found or has no associated local actor.`);
+      throw new NotFoundException(`User with ID '${userId}' not found or no associated actor.`);
     }
+    // Ensure the found actor is local
+    if (!user.actor.isLocal) {
+        this.logger.warn(`Actor for user ID '${userId}' is not a local actor.`);
+        throw new NotFoundException(`Actor for user ID '${userId}' is not a local actor.`);
+    }
+    return user.actor;
+  }
+
+  /**
+   * Finds an actor by their internal database ID.
+   * This method is used by KeyManagementService to retrieve the private key.
+   *
+   * @param id The internal UUID of the actor.
+   * @returns The ActorEntity if found.
+   * @throws NotFoundException if no actor with the given ID exists.
+   */
+  async findActorById(id: string): Promise<ActorEntity> {
+    this.logger.debug(`Searching for actor by ID: ${id}`);
+    // FIX: Explicitly select privateKeyPem here for KeyManagementService to retrieve it.
+    // This is necessary because privateKeyPem has @Exclude() and might not be loaded by default.
+    const actor = await this.actorRepository.findOne({
+      where: { id },
+      select: ['id', 'activityPubId', 'preferredUsername', 'name', 'summary', 'inbox', 'outbox', 'followersUrl', 'followingUrl', 'likedUrl', 'publicKeyPem', 'privateKeyPem', 'isLocal', 'data', 'createdAt', 'updatedAt'],
+    });
+    if (!actor) {
+      this.logger.warn(`Actor with ID '${id}' not found.`);
+      throw new NotFoundException(`Actor with ID '${id}' not found.`);
+    }
+    // DIAGNOSTIC LOG: Check if privateKeyPem is loaded
+    this.logger.debug(`ActorService: In findActorById, privateKeyPem for actor ${actor.id}: ${actor.privateKeyPem ? 'PRESENT' : 'MISSING'}`);
     return actor;
   }
 
@@ -215,22 +255,6 @@ export class ActorService {
     const actor = await this.actorRepository.findOne({ where: { preferredUsername: username } });
     if (!actor) {
       throw new NotFoundException(`Actor with preferred username '${username}' not found.`);
-    }
-    return actor;
-  }
-
-  /**
-   * Finds an actor by their internal database ID.
-   *
-   * @param id The internal UUID of the actor.
-   * @returns The ActorEntity if found.
-   * @throws NotFoundException if no actor with the given ID exists.
-   */
-  async findActorById(id: string): Promise<ActorEntity> {
-    this.logger.debug(`Searching for actor by ID: ${id}`);
-    const actor = await this.actorRepository.findOne({ where: { id } });
-    if (!actor) {
-      throw new NotFoundException(`Actor with ID '${id}' not found.`);
     }
     return actor;
   }

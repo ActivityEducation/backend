@@ -8,7 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { KeyManagementService } from 'src/core/services/key-management.service';
 import { RemoteObjectService } from 'src/core/services/remote-object.service';
-import * as HttpSignature from '@peertube/http-signature';
+// import * as HttpSignature from '@peertube/http-signature'; // REMOVED: No longer directly using HttpSignature.sign
 import * as jsonld from 'jsonld'; // For JSON-LD canonicalization
 import { ConfigService } from '@nestjs/config'; // For instance base URL
 
@@ -66,7 +66,7 @@ export class OutboxProcessor extends WorkerHost {
       throw new Error('Sender actor not found.');
     }
 
-    const privateKeyPem = await this.keyManagementService.getPrivateKey(senderActor.activityPubId);
+    const privateKeyPem = await this.keyManagementService.getPrivateKey(senderActor.id);
     if (!privateKeyPem) {
       this.logger.error(`Private key not found for actor '${senderActor.activityPubId}'. Cannot sign activity.`);
       throw new Error('Private key not found.');
@@ -91,13 +91,21 @@ export class OutboxProcessor extends WorkerHost {
 
     // If activity is public, send to followers' inboxes
     if (isPublic) {
-      const followers = await this.remoteObjectService.getActorFollowers(senderActor.activityPubId);
-      followers.forEach(followerUri => {
-        if (!recipients.includes(followerUri)) {
-          recipients.push(followerUri);
+      if (senderActor.followersUrl) {
+        const followersCollection = await this.remoteObjectService.getActorFollowers(senderActor.followersUrl);
+        if (followersCollection && Array.isArray(followersCollection.orderedItems)) {
+          followersCollection.orderedItems.forEach(followerUri => {
+            if (!recipients.includes(followerUri)) {
+              recipients.push(followerUri);
+            }
+          });
+          this.logger.debug(`Activity is public. Added ${followersCollection.orderedItems.length} followers as recipients.`);
+        } else {
+          this.logger.warn(`Public activity but no followers found or followers collection malformed for actor ${senderActor.activityPubId}.`);
         }
-      });
-      this.logger.debug(`Activity is public. Adding ${followers.length} followers as recipients.`);
+      } else {
+        this.logger.warn(`Public activity but senderActor.followersUrl is undefined for actor ${senderActor.activityPubId}. Cannot fetch followers.`);
+      }
     }
 
     // Add direct recipients (excluding 'Public')
@@ -145,11 +153,11 @@ export class OutboxProcessor extends WorkerHost {
     const inboxUrlsToDeliver: Set<string> = new Set();
     for (const recipientUri of recipients) {
       try {
-        const inbox = await this.remoteObjectService.getActorInbox(recipientUri);
-        if (inbox) {
-          inboxUrlsToDeliver.add(inbox);
+        const actorProfile = await this.remoteObjectService.fetchRemoteObject(recipientUri);
+        if (actorProfile && actorProfile.inbox) {
+          inboxUrlsToDeliver.add(actorProfile.inbox);
         } else {
-          this.logger.warn(`Could not resolve inbox for recipient: ${recipientUri}.`);
+          this.logger.warn(`Could not resolve inbox for recipient: ${recipientUri}. Actor profile or inbox URL missing.`);
         }
       } catch (error) {
         this.logger.warn(`Error resolving inbox for ${recipientUri}: ${error.message}`);
@@ -168,38 +176,59 @@ export class OutboxProcessor extends WorkerHost {
       try {
         this.logger.log(`Attempting to deliver activity '${activityId}' to inbox: ${inboxUrl}`);
 
-        const headers = {
-          Host: new URL(inboxUrl).host,
-          Date: new Date().toUTCString(),
-          'Content-Type': 'application/activity+json', // Or application/ld+json
-          Digest: `SHA-256=${this.keyManagementService.generateDigest(JSON.stringify(activity))}`,
+        const date = new Date().toUTCString();
+        const activityString = JSON.stringify(activity);
+        const digest = this.keyManagementService.generateDigest(activityString);
+
+        // Headers to be included in the request and signed
+        // FIX: Ensure header keys are lowercase for consistency with createSigningString's lookup
+        const requestHeaders: Record<string, string> = {
+          'host': new URL(inboxUrl).host,
+          'date': date,
+          'content-type': 'application/activity+json',
+          'digest': digest,
         };
 
-        // Sign the request
-        const signedHeaders = HttpSignature.sign({
-          url: new URL(inboxUrl).pathname, // Only pathname for (request-target)
-          method: 'POST',
-          headers: headers,
-          // body: Buffer.from(JSON.stringify(activity), 'utf8'), // The library needs the raw body for digest verification too if digest is included in headers to sign
-        }, {
-          keyId: `${senderActor.activityPubId}#main-key`,
-          privateKey: privateKeyPem,
-          algorithm: 'rsa-sha256', // or 'hs2019'
-          headers: ['(request-target)', 'host', 'date', 'digest'], // Ensure digest is signed
-        });
+        // Headers that will form the signing string
+        const headersToSign = ['(request-target)', 'host', 'date', 'digest'];
 
-        const response = await this.remoteObjectService.postSignedActivity(
-          inboxUrl,
-          activity,
-          signedHeaders,
+        // Generate the signing string using our custom helper
+        const signingString = this.keyManagementService.createSigningString(
+          requestHeaders, // Pass the lowercase-keyed headers
+          headersToSign,
+          'POST', // Method
+          inboxUrl, // Full URL for (request-target)
         );
 
-        if (response.ok) {
-          this.logger.log(`Successfully delivered activity '${activityId}' to ${inboxUrl}.`);
+        // Sign the string using Node.js crypto
+        const signature = this.keyManagementService.signString(
+          signingString,
+          privateKeyPem,
+          'rsa-sha256', // Algorithm
+        );
+
+        // Construct the full Signature header value
+        const signatureHeaderValue = `keyId="${senderActor.activityPubId}#main-key",algorithm="rsa-sha256",headers="${headersToSign.join(' ')}",signature="${signature}"`;
+
+        // Add the Signature header to the request headers (can be PascalCase for actual HTTP request)
+        requestHeaders['Signature'] = signatureHeaderValue;
+        requestHeaders['User-Agent'] = `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`;
+
+        this.logger.debug(`Dispatching signed activity to ${inboxUrl} with headers: ${JSON.stringify(requestHeaders)}`);
+
+        const response = await this.remoteObjectService.postSignedActivity(
+          senderActor.id, // Internal actor ID
+          inboxUrl, // Target inbox URL
+          activity, // Activity payload
+          requestHeaders // Complete headers including signature
+        );
+
+        if (response && response.status >= 200 && response.status < 300) {
+          this.logger.log(`Successfully delivered activity '${activityId}' to ${inboxUrl}. Status: ${response.status}`);
           successCount++;
         } else {
           this.logger.error(
-            `Failed to deliver activity '${activityId}' to ${inboxUrl}. Status: ${response.status} ${response.statusText}`,
+            `Failed to deliver activity '${activityId}' to ${inboxUrl}. Status: ${response?.status} ${response?.statusText || 'Unknown Error'}`,
           );
           failureCount++;
         }
@@ -216,7 +245,6 @@ export class OutboxProcessor extends WorkerHost {
       this.logger.error(
         `Outbox job ${job.id} for activity '${activityId}' completed with ${successCount} successes and ${failureCount} failures.`,
       );
-      // If there are failures, re-throw to allow BullMQ to retry the job
       throw new Error(`Failed to deliver activity to ${failureCount} inboxes.`);
     }
 

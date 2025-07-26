@@ -1,4 +1,4 @@
-// src/shared/services/key-management.service.ts
+// src/core/services/key-management.service.ts
 
 import { Inject, Injectable, InternalServerErrorException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -6,11 +6,10 @@ import { Repository } from 'typeorm';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
 import { LoggerService } from '../../shared/services/logger.service';
 import { ConfigService } from '@nestjs/config';
-import { createPublicKey, createPrivateKey, KeyObject } from 'crypto';
-import { InvalidKeyIdFormatException } from '../../shared/exceptions/invalid-key-id-format.exception'; // Assuming this exists or will be created
+import { createPublicKey, createPrivateKey, KeyObject, createSign, createHash } from 'crypto';
+import { InvalidKeyIdFormatException } from '../../shared/exceptions/invalid-key-id-format.exception';
 import { URL } from 'url';
 import { normalizeUrl } from '../../shared/utils/url-normalizer';
-import { createHash } from 'crypto';
 import { RemoteObjectService } from './remote-object.service';
 
 /**
@@ -49,23 +48,17 @@ export class KeyManagementService {
    */
   async generateKeyPair(): Promise<{ publicKeyPem: string; privateKeyPem: string }> {
     this.logger.log('Generating new RSA key pair...');
-    // Generate an RSA key pair
-    // Default options: 2048-bit key, public exponent 65537
     const { publicKey, privateKey } = await new Promise<{ publicKey: KeyObject; privateKey: KeyObject }>(
       (resolve, reject) => {
-        // Use 'generateKeyPair' from 'crypto' module
-        // This is asynchronous and more secure than sync methods
         require('crypto').generateKeyPair('rsa', {
-          modulusLength: 2048, // Recommended for RSA
+          modulusLength: 2048,
           publicKeyEncoding: {
-            type: 'spki', // Recommended for ActivityPub
+            type: 'spki',
             format: 'pem',
           },
           privateKeyEncoding: {
-            type: 'pkcs8', // Recommended for ActivityPub
+            type: 'pkcs8',
             format: 'pem',
-            // cipher: 'aes-256-cbc', // Optional: encrypt private key with a passphrase
-            // passphrase: 'top secret',
           },
         }, (err, publicKey, privateKey) => {
           if (err) reject(err);
@@ -74,7 +67,6 @@ export class KeyManagementService {
       }
     );
 
-    // Convert KeyObject to PEM string explicitly if not already
     const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
     const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 
@@ -92,8 +84,6 @@ export class KeyManagementService {
   async getPublicKey(keyId: string): Promise<string> {
     this.logger.debug(`Attempting to retrieve public key for keyId: ${keyId}`);
 
-    // First, try to find a local actor whose public key ID matches.
-    // The keyId is typically `actorId#main-key`. Extract actorId from keyId.
     const actorActivityPubId = this.extractActorIdFromKeyId(keyId);
     this.logger.debug(`Extracted actorActivityPubId from keyId: ${actorActivityPubId}`);
 
@@ -102,7 +92,6 @@ export class KeyManagementService {
         throw new InvalidKeyIdFormatException(`Invalid keyId format: ${keyId}`);
     }
 
-    // Attempt to find actor by their activityPubId locally first
     let actor = await this.actorRepository.findOne({
       where: { activityPubId: normalizeUrl(actorActivityPubId) },
     });
@@ -112,7 +101,6 @@ export class KeyManagementService {
       return actor.publicKeyPem;
     }
 
-    // If not found locally, or local actor doesn't have a public key, fetch remotely
     this.logger.log(`Public key not found locally for actor '${actorActivityPubId}'. Attempting to fetch remote actor profile.`);
     try {
       const remoteActorData = await this.remoteObjectService.fetchRemoteObject(actorActivityPubId);
@@ -122,27 +110,24 @@ export class KeyManagementService {
         this.logger.debug(`Fetched remote actor data for ${actorActivityPubId}. Extracted publicKeyPem: ${extractedPublicKeyPem ? 'YES' : 'NO'}`);
 
         if (extractedPublicKeyPem) {
-          // If remote actor found and has public key, save/update it locally for caching
           if (!actor) {
-            // Create a new actor entity if it doesn't exist
             actor = this.actorRepository.create({
               activityPubId: normalizeUrl(remoteActorData.id),
               preferredUsername: remoteActorData.preferredUsername,
               name: remoteActorData.name,
               summary: remoteActorData.summary,
-              inbox: normalizeUrl(remoteActorData.inbox),
-              outbox: normalizeUrl(remoteActorData.outbox),
+              inbox: remoteActorData.inbox,
+              outbox: remoteActorData.outbox,
               followersUrl: remoteActorData.followers,
-              followingUrl: remoteActorData.following,
-              likedUrl: remoteActorData.liked,
+              followingUrl: remoteActorData.following || '',
+              likedUrl: remoteActorData.liked || '',
               publicKeyPem: extractedPublicKeyPem,
               isLocal: false,
-              data: remoteActorData, // Store the full fetched data
+              data: remoteActorData,
             });
           } else {
-            // Update existing actor with public key if it was missing
             actor.publicKeyPem = extractedPublicKeyPem;
-            actor.data = remoteActorData; // Update full fetched data
+            actor.data = remoteActorData;
           }
           const savedActor = await this.actorRepository.save(actor);
           this.logger.log(`Public key for remote actor '${actorActivityPubId}' saved/updated locally. Actor ID: ${savedActor.id}`);
@@ -157,7 +142,6 @@ export class KeyManagementService {
       }
     } catch (error) {
       this.logger.error(`Error fetching or processing public key for ${keyId}: ${error.message}`, error.stack);
-      // Re-throw specific errors or wrap in a generic one
       if (error instanceof NotFoundException || error instanceof InvalidKeyIdFormatException) {
         throw error;
       }
@@ -171,14 +155,22 @@ export class KeyManagementService {
    * @param actorId The internal database ID of the local actor.
    * @returns The PEM-encoded private key string.
    * @throws NotFoundException if the actor or their private key is not found.
-   * @throws UnauthorizedException if attempting to get private key for a non-local actor.
+   * @throws InternalServerErrorException if private key is not found after retrieval.
    */
   async getPrivateKey(actorId: string): Promise<string> {
     this.logger.debug(`Attempting to retrieve private key for actor ID: ${actorId}`);
+    // The select clause in ActorService.findActorById should handle loading privateKeyPem.
     const actor = await this.actorRepository.findOne({
       where: { id: actorId, isLocal: true },
-      select: ['privateKeyPem'], // Explicitly select privateKeyPem as it's @Exclude'd by default
+      // FIX: Explicitly select privateKeyPem here as a fallback,
+      // although ActorService.findActorById should already load it.
+      // This ensures we are *certain* to try and load it.
+      select: ['id', 'privateKeyPem'],
     });
+
+    // DIAGNOSTIC LOG: Check the actor object and privateKeyPem immediately after retrieval
+    this.logger.debug(`KeyManagementService: Actor object retrieved for ID ${actorId}: ${JSON.stringify(actor ? { id: actor.id, privateKeyPemPresent: !!actor.privateKeyPem } : 'null')}`);
+
 
     if (!actor) {
       this.logger.warn(`Actor with ID '${actorId}' not found or is not a local actor.`);
@@ -186,7 +178,7 @@ export class KeyManagementService {
     }
 
     if (!actor.privateKeyPem) {
-      this.logger.error(`Private key not found for local actor: ${actorId}`);
+      this.logger.error(`Private key not found for local actor: ${actorId} after database retrieval.`);
       throw new InternalServerErrorException(`Private key not found for local actor: ${actorId}`);
     }
 
@@ -205,6 +197,62 @@ export class KeyManagementService {
     const digest = hash.digest('base64');
     this.logger.debug(`Generated SHA-256 digest: SHA-256=${digest}`);
     return `SHA-256=${digest}`;
+  }
+
+  /**
+   * Creates the signing string for HTTP Signatures as per the specification.
+   * This string is then signed with the private key.
+   *
+   * @param headers The HTTP headers object (keys should be lowercase).
+   * @param signedHeaders An array of header names (including pseudo-headers like '(request-target)') to be signed.
+   * @param method The HTTP method (e.g., 'POST').
+   * @param url The full URL of the request.
+   * @returns The signing string.
+   */
+  createSigningString(
+    headers: Record<string, string>,
+    signedHeaders: string[],
+    method: string,
+    url: string,
+  ): string {
+    const lines: string[] = [];
+    const parsedUrl = new URL(url);
+
+    for (const headerName of signedHeaders) {
+      if (headerName === '(request-target)') {
+        lines.push(`(request-target): ${method.toLowerCase()} ${parsedUrl.pathname}${parsedUrl.search}`);
+      } else if (headerName === 'host') {
+        lines.push(`host: ${parsedUrl.hostname}`); // Use hostname from parsed URL for host header
+      } else {
+        const headerValue = headers[headerName.toLowerCase()]; // Headers object might have lowercase keys
+        if (headerValue === undefined) {
+          this.logger.warn(`Header '${headerName}' is in signedHeaders but not present in provided headers.`);
+          // According to spec, if a header is signed but not present, its value is empty.
+          lines.push(`${headerName.toLowerCase()}:`);
+        } else {
+          lines.push(`${headerName.toLowerCase()}: ${headerValue}`);
+        }
+      }
+    }
+    const signingString = lines.join('\n');
+    this.logger.debug(`Generated signing string: \n${signingString}`);
+    return signingString;
+  }
+
+  /**
+   * Signs a string using the provided private key (PEM format) and algorithm.
+   *
+   * @param signingString The string to sign.
+   * @param privateKeyPem The PEM-encoded private key.
+   * @param algorithm The signing algorithm (e.g., 'rsa-sha256').
+   * @returns The base64-encoded signature.
+   */
+  signString(signingString: string, privateKeyPem: string, algorithm: string): string {
+    const signer = createSign('RSA-SHA256'); // Node.js crypto uses 'RSA-SHA256' for rsa-sha256
+    signer.update(signingString);
+    const signature = signer.sign(privateKeyPem, 'base64');
+    this.logger.debug(`Generated signature: ${signature}`);
+    return signature;
   }
 
   /**

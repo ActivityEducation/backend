@@ -11,7 +11,7 @@ import {
   HttpStatus,
   UseInterceptors,
   ClassSerializerInterceptor,
-  Body,
+  Body, // Keep Body import
   UseGuards,
   Query,
   DefaultValuePipe,
@@ -36,28 +36,29 @@ import { CreateFlashcardPayload } from '../dto/create-fashcard.dto';
 import { FlashcardEntity } from '../entities/flashcard.entity';
 import { FlashcardService } from '../services/flashcard.service';
 import { User } from 'src/shared/decorators/user.decorator';
-import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
 import { UpdateFlashcardDto } from '../dto/update-flashcard.dto';
-import { Flashcard as FlashcardView } from '../views/flashcard.view'; // Renamed import to avoid conflict
-import { Repository } from 'typeorm'; // Import Repository
-import { InjectRepository } from '@nestjs/typeorm'; // Import InjectRepository
+import { Flashcard as FlashcardView } from '../views/flashcard.view';
+import { Repository } from 'typeorm';
+import { InjectRepository } from '@nestjs/typeorm';
+import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
+// Removed Activity import as it's not needed for this endpoint's direct payload
 
 @ApiTags('EducationPub - Flashcards')
 @Controller('edu/flashcards')
-@ApiBearerAuth('JWT-auth') // Apply JWT authentication to all routes in this controller that require it
-@UseInterceptors(ClassSerializerInterceptor) // Apply serializer globally to this controller
+@ApiBearerAuth('JWT-auth')
+@UseInterceptors(ClassSerializerInterceptor)
 export class EducationPubController {
   constructor(
-    private readonly flashcardService: FlashcardService, // Inject FlashcardService
-    private readonly logger: LoggerService, // Inject LoggerService
-    @InjectRepository(ActorEntity) // Still need ActorEntity directly for username validation
+    private readonly flashcardService: FlashcardService,
+    private readonly logger: LoggerService,
+    @InjectRepository(ActorEntity)
     private readonly actorRepository: Repository<ActorEntity>,
   ) {
     this.logger.setContext('EducationPubController');
   }
 
   @Get()
-  @UseGuards(JwtAuthGuard) // Protect this route if it should only show user's flashcards
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Retrieve all flashcards (paginated)' })
   @ApiOkResponse({ type: [FlashcardView], description: 'Successfully retrieved a paginated list of flashcards.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
@@ -93,14 +94,14 @@ export class EducationPubController {
    * Saves the flashcard to the database and sends a 'Create' activity to the Fediverse.
    *
    * @param username The preferred username of the actor creating the flashcard. Must match authenticated user.
-   * @param localActorId The internal DB ID of the authenticated actor.
+   * @param localActorInternalId The internal DB ID of the authenticated actor (UUID).
    * @param createFlashcardPayload The incoming flashcard data.
    * @param isPublicQuery Optional query param to force public status (primarily for testing/dev ease).
    * @returns The created flashcard object.
    */
   @Post(':username')
   @HttpCode(HttpStatus.CREATED)
-  @UseGuards(JwtAuthGuard) // Require JWT authentication
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Create a new EducationPub Flashcard for a user' })
   @ApiParam({
     name: 'username',
@@ -125,19 +126,21 @@ export class EducationPubController {
   @ApiResponse({ status: 500, description: 'Internal server error.' })
   async createFlashcard(
     @Param('username') username: string,
-    @User('actor.activityPubId') localActorId: string, // Get authenticated user's internal ID
+    // FIX: Change to @User('actor.id') to get the internal UUID of the actor
+    @User('actor.id') localActorInternalId: string, // Get authenticated user's actor's internal DB ID (UUID)
     @Body() createFlashcardPayload: CreateFlashcardPayload,
-    @Query('isPublic', new DefaultValuePipe(false)) isPublicQuery: boolean, // Allow overriding for testing
+    @Query('isPublic', new DefaultValuePipe(false)) isPublicQuery: boolean,
   ): Promise<FlashcardEntity> {
-    this.logger.log(`Received request to create flashcard for user: ${username}, authenticated as actor ID: ${localActorId}`);
+    this.logger.log(`Received request to create flashcard for user: ${username}, authenticated as actor internal ID: ${localActorInternalId}`);
 
-    const actor = await this.actorRepository.findOne({ where: { id: localActorId } });
+    // Use localActorInternalId (UUID) to find the actor
+    const actor = await this.actorRepository.findOne({ where: { id: localActorInternalId } });
     if (!actor || actor.preferredUsername !== username) {
       throw new NotFoundException(`Actor '${username}' not found or you are not authorized to create content for this user.`);
     }
 
-    // Delegate to FlashcardService
-    return this.flashcardService.createFlashcard(localActorId, createFlashcardPayload, isPublicQuery);
+    // Delegate to FlashcardService, passing the internal actor ID
+    return this.flashcardService.createFlashcard(localActorInternalId, createFlashcardPayload, isPublicQuery);
   }
 
   @Put(':id')
@@ -151,7 +154,7 @@ export class EducationPubController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async updateFlashcard(
     @Param('id') id: string,
-    @User('actor.activityPubId') localActorId: string,
+    @User('actor.activityPubId') localActorId: string, // This is fine if FlashcardService expects ActivityPubId
     @Body() updateFlashcardDto: UpdateFlashcardDto,
   ): Promise<FlashcardEntity> {
     this.logger.log(`Received request to update flashcard ID: ${id} by actor ID: ${localActorId}`);
@@ -168,7 +171,7 @@ export class EducationPubController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async deleteFlashcard(
     @Param('id') id: string,
-    @User('actor.activityPubId') localActorId: string,
+    @User('actor.activityPubId') localActorId: string, // This is fine if FlashcardService expects ActivityPubId
   ): Promise<void> {
     this.logger.log(`Received request to delete flashcard ID: ${id} by actor ID: ${localActorId}`);
     await this.flashcardService.deleteFlashcard(id, localActorId);
@@ -185,7 +188,7 @@ export class EducationPubController {
   @ApiResponse({ status: 409, description: 'Conflict (already liked).' })
   async likeFlashcard(
     @Param('id') id: string,
-    @User('actor.activityPubId') localActorId: string,
+    @User('actor.activityPubId') localActorId: string, // This is fine if FlashcardService expects ActivityPubId
   ): Promise<{ message: string; liked: boolean }> {
     this.logger.log(`Actor ID '${localActorId}' attempting to like flashcard ID: ${id}`);
     return this.flashcardService.handleFlashcardLike(id, localActorId);
@@ -202,7 +205,7 @@ export class EducationPubController {
   @ApiResponse({ status: 409, description: 'Conflict (already boosted).' })
   async boostFlashcard(
     @Param('id') id: string,
-    @User('actor.activityPubId') localActorId: string,
+    @User('actor.activityPubId') localActorId: string, // This is fine if FlashcardService expects ActivityPubId
   ): Promise<{ message: string; boosted: boolean }> {
     this.logger.log(`Actor ID '${localActorId}' attempting to boost flashcard ID: ${id}`);
     return this.flashcardService.handleFlashcardBoost(id, localActorId);

@@ -11,16 +11,18 @@ import { ContentObjectEntity } from './entities/content-object.entity';
 import { LikeEntity } from './entities/like.entity';
 import { BlockEntity } from './entities/block.entity';
 import { AnnounceEntity } from './entities/announce.entity';
-import { ProcessedActivityEntity } from './entities/processed-activity.entity'; // Import new ProcessedActivityEntity
+import { ProcessedActivityEntity } from './entities/processed-activity.entity';
 import { InboxProcessor } from './services/inbox.processor';
-import { OutboxProcessor } from './services/outbox.processor';
 import { CoreModule } from '../../core/core.module';
 import { CommonModule } from '../../shared/common.module';
 import { ModerationModule } from '../moderation/moderation.module';
 import { ActivityHandlerModule } from './activity-handler/handler.module';
 import { ActivityPubController } from './controllers/activitypub.controller';
-import { ActorService } from './services/actor.service'; // Import new ActorService
+import { ActorService } from './services/actor.service';
 import { UserEntity } from '../auth/entities/user.entity';
+import { AuthModule } from '../auth/auth.module';
+import { HttpModule } from '@nestjs/axios'; // NEW: Import HttpModule
+import { OutboxProcessor } from './services/outbox.processor';
 
 @Module({
   imports: [
@@ -34,7 +36,7 @@ import { UserEntity } from '../auth/entities/user.entity';
       LikeEntity,
       BlockEntity,
       AnnounceEntity,
-      ProcessedActivityEntity, // Register new ProcessedActivityEntity
+      ProcessedActivityEntity,
       UserEntity, // Register UserEntity as well, if ActorService depends on it here
     ]),
     // Register BullMQ queues for inbox and outbox processing
@@ -46,19 +48,19 @@ import { UserEntity } from '../auth/entities/user.entity';
     }),
     forwardRef(() => CoreModule),
     CommonModule,
-    ModerationModule, // Import ModerationModule if needed for activity processing
+    ModerationModule,
+    AuthModule,
+    HttpModule, // NEW: Add HttpModule to imports
   ],
   providers: [
-    // Provide the processors responsible for handling queue jobs
     InboxProcessor,
     OutboxProcessor,
-    ActorService, // Provide ActorService
+    ActorService,
   ],
   controllers: [
     ActivityPubController
   ],
   exports: [
-    // Export TypeOrmModule.forFeature to allow other modules to inject entity repositories
     TypeOrmModule.forFeature([
       ActorEntity,
       ActivityEntity,
@@ -67,12 +69,11 @@ import { UserEntity } from '../auth/entities/user.entity';
       LikeEntity,
       BlockEntity,
       AnnounceEntity,
-      ProcessedActivityEntity, // Export new ProcessedActivityEntity
+      ProcessedActivityEntity,
     ]),
-    // Export processors if other modules need to directly interact with them
     InboxProcessor,
     OutboxProcessor,
-    ActorService, // Export ActorService
+    ActorService,
   ],
 })
 export class ActivityPubModule {}
