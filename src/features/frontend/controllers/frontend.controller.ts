@@ -1,6 +1,6 @@
 import { Controller, Get } from "@nestjs/common";
 
-@Controller()
+@Controller('fe')
 export class FrontendController {
     @Get()
     public getPrimaryIndex() {

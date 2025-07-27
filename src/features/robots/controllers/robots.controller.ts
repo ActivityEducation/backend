@@ -33,7 +33,7 @@ export class RobotsController {
   }
 
   // --- Robot Rules Management Endpoints ---
-  @Post('api/robots/rules')
+  @Post('robots/rules')
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['manage', 'all']) // Restricted to admin role
@@ -49,7 +49,7 @@ export class RobotsController {
     return this.robotsService.createRule(createRobotRuleDto.userAgent, createRobotRuleDto.type, createRobotRuleDto.value, createRobotRuleDto.order);
   }
 
-  @Get('api/robots/rules')
+  @Get('robots/rules')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['read', RobotRuleEntity.name]) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
@@ -62,7 +62,7 @@ export class RobotsController {
     return this.robotsService.findAllRules();
   }
 
-  @Get('api/robots/rules/:id')
+  @Get('robots/rules/:id')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['read', RobotRuleEntity.name]) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
@@ -79,7 +79,7 @@ export class RobotsController {
     return rule;
   }
 
-  @Put('api/robots/rules/:id')
+  @Put('robots/rules/:id')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['manage', 'all']) // Restricted to admin role
@@ -98,7 +98,7 @@ export class RobotsController {
     return updatedRule;
   }
 
-  @Delete('api/robots/rules/:id')
+  @Delete('robots/rules/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['manage', 'all']) // Restricted to admin role
@@ -115,7 +115,7 @@ export class RobotsController {
   }
 
   // --- Sitemap Management Endpoints (similar changes) ---
-  @Post('api/robots/sitemaps')
+  @Post('robots/sitemaps')
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['manage', 'all']) // Restricted to admin role
@@ -131,7 +131,7 @@ export class RobotsController {
     return this.robotsService.createSitemap(createSitemapDto.url, createSitemapDto.isEnabled);
   }
 
-  @Get('api/robots/sitemaps')
+  @Get('robots/sitemaps')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['read', SitemapEntity.name]) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
@@ -144,7 +144,7 @@ export class RobotsController {
     return this.robotsService.findAllSitemaps();
   }
 
-  @Get('api/robots/sitemaps/:id')
+  @Get('robots/sitemaps/:id')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['read', SitemapEntity.name]) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
@@ -161,7 +161,7 @@ export class RobotsController {
     return sitemap;
   }
 
-  @Put('api/robots/sitemaps/:id')
+  @Put('robots/sitemaps/:id')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['manage', 'all']) // Restricted to admin role
@@ -180,7 +180,7 @@ export class RobotsController {
     return updatedSitemap;
   }
 
-  @Delete('api/robots/sitemaps/:id')
+  @Delete('robots/sitemaps/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['manage', 'all']) // Restricted to admin role
