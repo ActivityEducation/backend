@@ -1,0 +1,140 @@
+# config/roles.yaml
+# Defines roles and their associated permissions for the EducationPub platform.
+# This file serves as the single source of truth for authorization rules.
+
+- name: admin
+  permissions:
+    # Admins have full control over all subjects.
+    - action: manage
+      subject: all
+      type: allow
+
+- name: user
+  permissions:
+    # General read access for all public content and profiles
+    - action: read
+      subject: all
+      type: allow
+
+    # User management: can read and update their own UserEntity
+    - action: read
+      subject: UserEntity
+      conditions:
+        id: "{{user.id}}" # User can read their own profile
+      type: allow
+    - action: update
+      subject: UserEntity
+      conditions:
+        id: "{{user.id}}" # User can update their own profile
+      type: allow
+
+    # FlashcardEntity permissions (create, update, delete own)
+    - action: create
+      subject: FlashcardEntity
+      type: allow
+    - action: update
+      subject: FlashcardEntity
+      conditions:
+        creator:
+          id: "{{user.id}}" # User can update their OWN flashcards
+      type: allow
+    - action: delete
+      subject: FlashcardEntity
+      conditions:
+        creator:
+          id: "{{user.id}}" # User can delete their OWN flashcards
+      type: allow
+    - action: like
+      subject: FlashcardEntity
+      type: allow
+    - action: boost
+      subject: FlashcardEntity
+      type: allow
+
+    # FlashcardModelEntity permissions (create, update, delete own)
+    - action: create
+      subject: FlashcardModelEntity
+      type: allow
+    - action: update
+      subject: FlashcardModelEntity
+      conditions:
+        creator:
+          id: "{{user.id}}" # User can update their OWN flashcard models
+      type: allow
+    - action: delete
+      subject: FlashcardModelEntity
+      conditions:
+        creator:
+          id: "{{user.id}}" # User can delete their OWN flashcard models
+      type: allow
+
+    # ActivityPub interaction permissions
+    - action: create
+      subject: FollowEntity # Users can initiate follows
+      type: allow
+    - action: delete
+      subject: FollowEntity # Users can undo follows
+      type: allow
+    # Note: Like and Announce actions are handled by specific 'like' and 'boost' actions on FlashcardEntity
+    # which then trigger ActivityPub activities.
+
+    # Explicitly deny users from managing RobotRules or Sitemaps
+    - action: manage
+      subject: RobotRuleEntity
+      type: deny
+    - action: manage
+      subject: SitemapEntity
+      type: deny
+
+- name: moderator
+  permissions:
+    # Moderators have general read access to all content
+    - action: read
+      subject: all
+      type: allow
+
+    # Moderation-specific permissions
+    - action: manage
+      subject: FlaggedObjectEntity # Moderators can manage moderation flags
+      type: allow
+
+    # Can update any Flashcard (e.g., to fix issues), but cannot delete (as per plan)
+    - action: update
+      subject: FlashcardEntity
+      type: allow
+    - action: delete
+      subject: FlashcardEntity
+      type: deny # Restrictive: Moderators cannot delete any flashcards (only hide/flag)
+
+    # Can manage RobotRules and Sitemaps (as per plan's example)
+    - action: manage
+      subject: RobotRuleEntity
+      type: allow
+    - action: manage
+      subject: SitemapEntity
+      type: allow
+
+- name: guest
+  permissions:
+    # Guests (unauthenticated users) can only read public content and profiles
+    - action: read
+      subject: UserEntity
+      type: allow
+    - action: read
+      subject: ActorEntity
+      type: allow
+    - action: read
+      subject: ContentObjectEntity
+      type: allow
+    - action: read
+      subject: FlashcardEntity
+      type: allow
+    - action: read
+      subject: FlashcardModelEntity
+      type: allow
+    - action: read
+      subject: RobotRuleEntity
+      type: allow
+    - action: read
+      subject: SitemapEntity
+      type: allow

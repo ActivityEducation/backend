@@ -31,10 +31,13 @@ export class UserEntity {
 
   @Column({ length: 255 })
   @Exclude() // Exclude password from API responses by default
-  password: string; // Storing hashed password
+  passwordHash: string; // Storing hashed password (renamed from 'password')
 
   @Column({ type: 'text', nullable: true })
   email?: string; // Optional email for recovery/notifications
+
+  @Column({ type: 'jsonb', default: [] })
+  roles: string[]; // e.g., ['user', 'admin']
 
   @CreateDateColumn()
   createdAt: Date;

@@ -28,17 +28,9 @@ async function bootstrap() {
   loggerService.setContext('Bootstrap');
 
 
+  app.useGlobalFilters(new HttpExceptionFilter(loggerService));  
+  app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true, }));  
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
-
-  // Apply global exception filter for consistent error responses
-  app.useGlobalFilters(new HttpExceptionFilter(loggerService));
-
-  // Enable global validation pipe for DTOs
-  app.useGlobalPipes(new ValidationPipe({
-    transform: true, // Automatically transform payloads to DTO instances
-    whitelist: true, // Remove properties not defined in the DTO
-    forbidNonWhitelisted: true, // Throw error if non-whitelisted properties are present
-  }));
 
   // Enable CORS for web clients
   app.enableCors({
@@ -52,7 +44,7 @@ async function bootstrap() {
 
   // Set a global prefix for API routes, excluding well-known and nodeinfo
   app.setGlobalPrefix('api', {
-    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health'],
+    exclude: ['.well-known/(.*)', 'nodeinfo/(.*)', 'ns/(.*)', 'health', 'robots.txt'],
   });
   setupSwagger(app);
 

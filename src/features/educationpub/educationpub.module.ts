@@ -1,31 +1,24 @@
 // src/features/educationpub/educationpub.module.ts
-// Updated to include new entities and services
-
-import { forwardRef, Module } from "@nestjs/common";
-import { ActivityPubModule } from "../activitypub/activitypub.module";
-import { CoreModule } from "src/core/core.module";
-import { CommonModule } from "src/shared/common.module";
-import { FlashcardService } from "./services/flashcard.service";
-import { FlashcardModelService } from "./services/flashcard-model.service"; // New service
-import { EducationPubController } from "./controllers/flashcard.controller"; // Renamed from FlashcardController for clarity on primary role
-import { FlashcardModelController } from "./controllers/flashcard-model.controller"; // New controller
-import { TypeOrmModule } from "@nestjs/typeorm";
-import { Flashcard } from "./views/flashcard.view"; // Keep view if still used as a view
-import { FlashcardEntity } from "./entities/flashcard.entity"; // Import new FlashcardEntity
-import { FlashcardModelEntity } from "./entities/flashcard-model.entity"; // Import new FlashcardModelEntity
+import { Module, forwardRef } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { FlashcardModelEntity } from './entities/flashcard-model.entity';
+import { FlashcardEntity } from './entities/flashcard.entity';
+import { FlashcardModelService } from './services/flashcard-model.service';
+import { FlashcardService } from './services/flashcard.service';
+import { EducationPubController } from './controllers/flashcard.controller'; // Renamed from FlashcardController
+import { FlashcardModelController } from './controllers/flashcard-model.controller';
+import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
+import { AuthModule } from 'src/features/auth/auth.module'; // Import AuthModule
+import { CommonModule } from 'src/shared/common.module'; // Import CommonModule
 
 @Module({
-    imports: [
-        forwardRef(() => CoreModule),
-        CommonModule,
-        forwardRef(() => ActivityPubModule),
-        TypeOrmModule.forFeature([Flashcard, FlashcardEntity, FlashcardModelEntity]) // Register new entities and old view
-    ],
-    controllers: [EducationPubController, FlashcardModelController], // Register new controllers
-    providers: [FlashcardService, FlashcardModelService], // Register new services
-    exports: [FlashcardService, FlashcardModelService], // Export new services if needed by other modules
+  imports: [
+    TypeOrmModule.forFeature([FlashcardModelEntity, FlashcardEntity, ActorEntity]),
+    forwardRef(() => AuthModule), // Import AuthModule to make AbilityFactory and other auth-related providers available
+    CommonModule, // Import CommonModule to make LoggerService available
+  ],
+  providers: [FlashcardModelService, FlashcardService],
+  controllers: [EducationPubController, FlashcardModelController],
+  exports: [FlashcardModelService, FlashcardService],
 })
-export class EducationPubModule {
-  // This module can be used to encapsulate education-related features
-  // such as courses, lessons, and educational content.
-}
+export class EducationPubModule {}

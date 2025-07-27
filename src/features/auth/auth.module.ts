@@ -15,6 +15,10 @@ import { ModerationModule } from '../moderation/moderation.module';
 import { UserEntity } from './entities/user.entity';
 import { ActivityPubModule } from '../activitypub/activitypub.module';
 import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard';
+import { AbilityFactory } from 'src/shared/authorization/ability.factory';
+import { PermissionConfigService } from 'src/shared/config/permission-config.service';
+import { AbilitiesGuard } from 'src/shared/guards/abilities.guard';
+
 
 @Module({
   imports: [
@@ -22,7 +26,7 @@ import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard';
     forwardRef(() => ModerationModule),
     forwardRef(() => ActivityPubModule),
     // Register ActorEntity and UserEntity with TypeORM for use in AuthService
-    // FIX: Ensure UserEntity is explicitly registered here.
+    // Also, UserEntity is needed by PermissionConfigService.
     TypeOrmModule.forFeature([
       UserEntity, // Ensure UserEntity is registered
       ActorEntity // ActorEntity is also needed for AuthService
@@ -44,12 +48,18 @@ import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard';
     AuthService,
     JwtStrategy,
     JwtAuthGuard,
+    AbilityFactory,
+    PermissionConfigService, // This is where PermissionConfigService is provided
+    AbilitiesGuard,
   ],
   controllers: [AuthController],
   exports: [
     AuthService,
     JwtAuthGuard,
     JwtModule,
+    AbilityFactory,
+    PermissionConfigService,
+    AbilitiesGuard,
   ],
 })
 export class AuthModule {}

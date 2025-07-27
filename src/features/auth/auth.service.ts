@@ -1,30 +1,36 @@
 // src/features/auth/auth.service.ts
 
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException, BadRequestException, UnauthorizedException, Inject } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { UserEntity } from './entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
 import { LoggerService } from 'src/shared/services/logger.service';
-import { ActorService } from 'src/features/activitypub/services/actor.service'; // Import ActorService
+import { ActorService } from 'src/features/activitypub/services/actor.service';
+import { UserRole } from './enums/user-role.enum';
+import { PermissionConfigService } from 'src/shared/config/permission-config.service';
+import Redis from 'ioredis';
+import { LoginDto } from './dto/login.dto'; // Import LoginDto
 
 @Injectable()
-export class AuthService {
+export class AuthService { // Exporting AuthService explicitly
   constructor(
     @InjectRepository(UserEntity)
     private usersRepository: Repository<UserEntity>,
     private jwtService: JwtService,
     private readonly logger: LoggerService,
-    private readonly actorService: ActorService, // Inject ActorService
+    private readonly actorService: ActorService,
+    private readonly permissionConfigService: PermissionConfigService,
+    @Inject('REDIS_CLIENT') private readonly redisClient: Redis,
   ) {
     this.logger.setContext('AuthService');
   }
 
   /**
    * Registers a new user and creates an associated ActivityPub Actor.
+   * Assigns the default 'user' role.
    * @param registerDto - The registration data.
    * @returns The newly created user entity with its actor.
    */
@@ -40,13 +46,14 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(registerDto.password, 10);
 
-    // Create user entity
-    const newUser = this.usersRepository.create({
+    // Create user entity with default role
+    const newUser: UserEntity = this.usersRepository.create({
       username: registerDto.username,
-      password: hashedPassword,
+      passwordHash: hashedPassword, // Changed 'password' to 'passwordHash'
+      roles: [UserRole.USER], // Assign default 'user' role
     });
 
-    const savedUser = await this.usersRepository.save(newUser);
+    const savedUser: UserEntity = await this.usersRepository.save(newUser); // Explicitly type savedUser
     this.logger.log(`User '${savedUser.username}' saved to database.`);
 
     // Create ActivityPub Actor for the new user
@@ -67,9 +74,8 @@ export class AuthService {
         actorError.stack,
       );
       // Optionally, roll back user creation or mark user as "actor creation failed"
-      // For MVP, we might log and proceed, assuming the actor creation is non-blocking.
-      // For robustness, consider a transaction or a cleanup mechanism.
-      throw new NotFoundException(`User created, but failed to create associated ActivityPub Actor: ${actorError.message}`);
+      await this.usersRepository.delete(savedUser.id); // Rollback user creation on actor error
+      throw new ConflictException(`Failed to create user account due to actor creation error: ${actorError.message}`);
     }
 
     // Load the actor relation before returning to ensure it's available
@@ -81,14 +87,14 @@ export class AuthService {
 
   /**
    * Validates user credentials and returns a JWT token upon successful login.
-   * @param loginDto - The login credentials.
+   * @param user - The authenticated user entity (from validateUser).
    * @returns An object containing the JWT access token.
    */
   async login(user: UserEntity): Promise<{ access_token: string }> {
     this.logger.log(`Generating JWT for user: ${user.username}`);
     // The passport local strategy has already validated the user.
     // We just need to sign the JWT.
-    const payload = { username: user.username, sub: user.id }; // 'sub' typically holds the user ID
+    const payload = { username: user.username, sub: user.id, roles: user.roles }; // Include roles in JWT payload
     return {
       access_token: this.jwtService.sign(payload),
     };
@@ -127,14 +133,39 @@ export class AuthService {
       return null;
     }
 
-    const isPasswordValid = await bcrypt.compare(pass, user.password);
+    const isPasswordValid = await bcrypt.compare(pass, user.passwordHash); // Changed 'user.password' to 'user.passwordHash'
     if (!isPasswordValid) {
       this.logger.warn(`Invalid password for user: ${username}`);
       return null;
     }
 
     // Return the user without the password hash
-    const { password, ...result } = user;
+    const { passwordHash, ...result } = user; // Changed 'password' to 'passwordHash'
     return result as UserEntity;
+  }
+
+  /**
+   * Assigns specific roles to a user and invalidates their cached abilities.
+   * @param userId The internal ID of the user.
+   * @param roleNames An array of role names to assign.
+   * @returns The updated UserEntity.
+   * @throws NotFoundException if the user is not found.
+   * @throws BadRequestException if any provided role name is invalid.
+   */
+  async assignRolesToUser(userId: string, roleNames: string[]): Promise<UserEntity> {
+    this.logger.log(`Attempting to assign roles '${roleNames.join(', ')}' to user ID: ${userId}`);
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) { throw new NotFoundException(`User with ID '${userId}' not found.`); }
+    const invalidRoles = roleNames.filter(roleName => !this.permissionConfigService.getAllRoleNames().includes(roleName));
+    if (invalidRoles.length > 0) { throw new BadRequestException(`Invalid role(s) provided: ${invalidRoles.join(', ')}. These roles do not exist in the YAML configuration.`); }
+    user.roles = roleNames;
+    await this.usersRepository.save(user);
+    this.logger.log(`Roles '${roleNames.join(', ')}' assigned to user '${user.username}'.`);
+
+    // Invalidate cached AppAbility for this user in Redis
+    await this.redisClient.del(`rbac:ability:${userId}`);
+    this.logger.debug(`Invalidated cached AppAbility for user ID: ${userId}`);
+
+    return user;
   }
 }

@@ -32,6 +32,10 @@ import { HealthModule } from './features/health/health.module';
 import { FrontendModule } from './features/frontend/frontend.module';
 import { UserEntity } from './features/auth/entities/user.entity';
 import { ProcessedActivityEntity } from './features/activitypub/entities/processed-activity.entity';
+import { RobotsModule } from './features/robots/robots.module';
+import { SitemapEntity } from './features/robots/entities/sitemap.entity';
+import { RobotRuleEntity } from './features/robots/entities/robot-rule.entity';
+import { PermissionConfigService } from './shared/config/permission-config.service';
 
 /**
  * AppModule
@@ -101,6 +105,7 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
     EducationPubModule,
     HealthModule,
     FrontendModule,
+    RobotsModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.
@@ -128,6 +133,8 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
           Flashcard, // Views can also be listed here for discovery
           UserEntity,
           ProcessedActivityEntity,
+          RobotRuleEntity,
+          SitemapEntity
         ],
         dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.
@@ -153,6 +160,7 @@ import { ProcessedActivityEntity } from './features/activitypub/entities/process
       }),
       inject: [ConfigService],
     },
+    PermissionConfigService,
   ],
 })
 export class AppModule {}
