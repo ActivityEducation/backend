@@ -1,30 +1,30 @@
 import { Module } from '@nestjs/common';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
-import { FrontendController } from './controllers/frontend.controller';
 
-const feDir = join(__dirname, '..', '..', '..', 'static');
+const reactAppPath = join(__dirname, '..', '..', '..', 'static');
 
 @Module({
   imports: [
     ServeStaticModule.forRoot({
-      rootPath: feDir,
+      rootPath: reactAppPath, // Use the dynamically determined path
+      serveRoot: '/app', // Your React app will be served from /app/
       exclude: [
-        '/api*',
+        '/api/(.*)',
         '/robots.txt',
         '/.well-known/(.*)',
         '/nodeinfo/(.*)',
         '/ns/(.*)',
         '/swagger',
         '/health',
-      ], // Exclude your API routes
+      ],
+      renderPath: 'index.html', // Essential for client-side routing and refreshes
     }),
   ],
   exports: [ServeStaticModule],
-  controllers: [FrontendController],
 })
 export class FrontendModule {
     onModuleInit() {
-        console.log(feDir);
+        console.log(`FrontendModule serving static files from: ${reactAppPath} at URL prefix: /app`);
     }
 }

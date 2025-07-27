@@ -94,18 +94,15 @@ import { PermissionConfigService } from './shared/config/permission-config.servi
       }),
     }),
 
-    // Core application modules
     CoreModule,
-    CommonModule, // Explicitly import CommonModule now that it's no longer @Global()
-
-    // Feature modules
+    CommonModule,
     AuthModule,
     ModerationModule,
     ActivityPubModule,
     EducationPubModule,
     HealthModule,
-    FrontendModule,
     RobotsModule,
+    FrontendModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.

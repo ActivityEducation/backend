@@ -1,9 +1,11 @@
-import { Controller, Get } from "@nestjs/common";
+import { Controller, Get, Redirect } from "@nestjs/common";
 
-@Controller('fe')
+@Controller('/')
 export class FrontendController {
-    @Get()
-    public getPrimaryIndex() {
-        return "please pardon our dust";
-    }
+  @Get('/')
+  @Redirect('/app', 302) // Redirects root requests to /app
+  redirectToAppRoot() {
+    // This method simply triggers the redirect.
+    // The response is handled by @Redirect decorator.
+  }
 }
