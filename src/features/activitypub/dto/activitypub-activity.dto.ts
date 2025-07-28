@@ -2,10 +2,11 @@
 
 import { IsString, IsUrl, IsOptional, IsArray, ValidateNested, IsDefined, IsObject, ValidateIf } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, ApiSchema } from '@nestjs/swagger';
 
 // A simple DTO to represent a generic ActivityPub object or activity for validation purposes.
 // This will serve as the 'expectedType' for the @Activity() decorator.
+@ApiSchema({ name: 'Activity' })
 export class ActivityPubActivityDto {
   @IsOptional()
   @ApiPropertyOptional({ description: 'The JSON-LD context(s) for the object.' })

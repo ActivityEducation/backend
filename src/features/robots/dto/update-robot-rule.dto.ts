@@ -1,8 +1,9 @@
 // src/features/robots/dto/update-robot-rule.dto.ts
 
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional, ApiSchema } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsIn, IsNumber, IsOptional, Min } from 'class-validator';
 
+@ApiSchema({ name: 'UpdateRobotRule' })
 export class UpdateRobotRuleDto {
   @IsOptional()
   @IsString()

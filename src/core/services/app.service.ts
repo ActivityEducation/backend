@@ -871,12 +871,12 @@ export class AppService {
     return {
       version: '2.0',
       software: {
-        name: 'edupub',
+        name: 'ActivityEducation',
         version: '0.1.0-alpha', // Your application's version
-        repository: 'https://github.com/your-repo/edupub', // Link to your repository
+        repository: 'https://github.com/activityeducation/backend', // Link to your repository
         homepage: this.instanceBaseUrl, // Your instance homepage
       },
-      protocols: ['activitypub'],
+      protocols: ['activitypub', 'educationpub'],
       services: {
         outbound: [], // e.g., 'atom', 'rss' if you support those
         inbound: [], // e.g., 'atom', 'rss' if you consume those
@@ -892,7 +892,9 @@ export class AppService {
       },
       openRegistrations: false, // Whether new user registrations are open
       // NodeName, NodeDescription, etc. can be added from config
-      // metadata: {}, // Any additional instance-specific metadata
+      metadata: {
+        name: 'EduPub'
+      },
     };
   }
 }

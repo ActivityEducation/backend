@@ -1,8 +1,9 @@
 // src/features/robots/dto/update-sitemap.dto.ts
 
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional, ApiSchema } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsBoolean, IsOptional, IsUrl } from 'class-validator';
 
+@ApiSchema({ name: 'UpdateSitemap' })
 export class UpdateSitemapDto {
   @IsOptional()
   @IsUrl()

@@ -1,8 +1,9 @@
 // src/features/robots/dto/create-sitemap.dto.ts
 
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiSchema } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsBoolean, IsOptional, IsUrl } from 'class-validator';
 
+@ApiSchema({ name: 'CreateSitemap' })
 export class CreateSitemapDto {
   @IsUrl()
   @IsNotEmpty()

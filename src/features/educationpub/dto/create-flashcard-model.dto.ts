@@ -4,6 +4,7 @@ import { ApiProperty, ApiPropertyOptional, ApiSchema } from "@nestjs/swagger";
 import { ArrayNotEmpty, IsArray, IsBoolean, IsNotEmpty, IsObject, IsOptional, IsString, IsUrl, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 
+@ApiSchema({ name: 'FlashcardField' })
 export class FlashcardFieldDto {
   @IsString()
   @IsNotEmpty()
@@ -21,6 +22,7 @@ export class FlashcardFieldDto {
   required?: boolean;
 }
 
+@ApiSchema({ name: 'FlashcardTemplate' })
 export class FlashcardTemplateDto {
   @IsString()
   @IsNotEmpty()

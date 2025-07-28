@@ -1,8 +1,9 @@
 // src/features/robots/dto/create-robot-rule.dto.ts
 
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiSchema } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsIn, IsNumber, IsOptional, Min } from 'class-validator';
 
+@ApiSchema({ name: 'CreateRobotRule' })
 export class CreateRobotRuleDto {
   @IsString()
   @IsNotEmpty()
