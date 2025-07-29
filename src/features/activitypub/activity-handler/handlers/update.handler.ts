@@ -93,9 +93,8 @@ export class UpdateHandler implements IActivityHandler {
                   flashcardModelEntity = await this.flashcardModelService.createFlashcardModel({
                       name: remoteModelData.name || 'Federated Model',
                       summary: remoteModelData.summary,
-                      eduFields: remoteModelData['edu:fields'] || [],
-                      eduCardTemplates: remoteModelData['edu:cardTemplates'] || [],
-                      eduStylingCSS: remoteModelData['edu:stylingCSS']
+                      fields: remoteModelData['edu:fields'] || [],
+                      cardTemplates: remoteModelData['edu:cardTemplates'] || [],
                   });
                   flashcardModelEntity.activityPubId = String(updatedObject['edu:model']);
                   await this.flashcardModelService.updateFlashcardModel(flashcardModelEntity.id, flashcardModelEntity);

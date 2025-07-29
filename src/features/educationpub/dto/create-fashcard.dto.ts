@@ -9,7 +9,7 @@ export class CreateFlashcardPayload {
   @ApiProperty({ description: 'The name or title of the flashcard.' })
   name: string;
 
-  @IsUrl() // Ensure this is a valid URL
+  // @IsUrl() // Ensure this is a valid URL
   @IsNotEmpty()
   @ApiProperty({
     description:

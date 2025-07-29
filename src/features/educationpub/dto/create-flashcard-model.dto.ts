@@ -1,46 +1,73 @@
-// src/features/educationpub/dto/create-flashcard-model.dto.ts
+import {
+  IsString,
+  IsNotEmpty,
+  IsArray,
+  ValidateNested,
+  IsOptional,
+  IsEnum,
+  IsNumber,
+  ArrayNotEmpty,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { ApiProperty, ApiPropertyOptional, ApiSchema } from "@nestjs/swagger";
-import { ArrayNotEmpty, IsArray, IsBoolean, IsNotEmpty, IsObject, IsOptional, IsString, IsUrl, ValidateNested } from "class-validator";
-import { Type } from "class-transformer";
-
-@ApiSchema({ name: 'FlashcardField' })
-export class FlashcardFieldDto {
+class FieldDefinitionDto {
   @IsString()
   @IsNotEmpty()
-  @ApiProperty({ description: 'Name of the field (e.g., "Front", "Back").' })
+  @ApiProperty()
+  id: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @ApiProperty()
   name: string;
 
-  @IsString()
-  @IsNotEmpty()
-  @ApiProperty({ description: 'Type of the field (e.g., "text", "html", "image").' })
-  type: string;
-
-  @IsBoolean()
-  @IsOptional()
-  @ApiPropertyOptional({ description: 'Whether the field is required.', default: false })
-  required?: boolean;
+  @IsEnum(['text', 'image', 'audio', 'icon'])
+  @ApiProperty({ enum: ['text', 'image', 'audio', 'icon'], enumName: 'FieldType' })
+  type: 'text' | 'image' | 'audio' | 'icon';
 }
 
-@ApiSchema({ name: 'FlashcardTemplate' })
-export class FlashcardTemplateDto {
+class FieldLayoutDto {
   @IsString()
   @IsNotEmpty()
-  @ApiProperty({ description: 'Name of the template (e.g., "Basic").' })
+  @ApiProperty()
+  fieldId: string;
+
+  @IsNumber()
+  @ApiProperty()
+  x: number;
+
+  @IsNumber()
+  @ApiProperty()
+  y: number;
+
+  @IsNumber()
+  @ApiProperty()
+  width: number;
+
+  @IsNumber()
+  @ApiProperty()
+  height: number;
+}
+
+class CardTemplateDto {
+  @IsString()
+  @IsNotEmpty()
+  @ApiProperty({ description: 'The unique identifier for the card template.' })
+  id: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @ApiProperty({ description: 'The name of the card template.' })
   name: string;
 
-  @IsString()
-  @IsNotEmpty()
-  @ApiProperty({ description: 'HTML template for the front of the card.' })
-  frontTemplate: string;
-
-  @IsString()
-  @IsNotEmpty()
-  @ApiProperty({ description: 'HTML template for the back of the card.' })
-  backTemplate: string;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => FieldLayoutDto)
+  @ApiProperty({ type: [FieldLayoutDto] })
+  layout: FieldLayoutDto[];
 }
 
-@ApiSchema({ name: 'CreateFlashcardModel' })
 export class CreateFlashcardModelDto {
   @IsString()
   @IsNotEmpty()
@@ -55,27 +82,14 @@ export class CreateFlashcardModelDto {
   @IsArray()
   @ArrayNotEmpty()
   @ValidateNested({ each: true })
-  @Type(() => FlashcardFieldDto)
-  @ApiProperty({
-    type: [FlashcardFieldDto],
-    description: 'Defines the structure of fields in this flashcard model.',
-    example: [{ name: "Front", type: "text" }, { name: "Back", type: "html" }]
-  })
-  eduFields: FlashcardFieldDto[];
+  @Type(() => FieldDefinitionDto)
+  @ApiProperty({ type: [FieldDefinitionDto] })
+  fields: FieldDefinitionDto[];
 
   @IsArray()
   @ArrayNotEmpty()
   @ValidateNested({ each: true })
-  @Type(() => FlashcardTemplateDto)
-  @ApiProperty({
-    type: [FlashcardTemplateDto],
-    description: 'Defines the rendering templates for cards of this model.',
-    example: [{ name: "Basic", frontTemplate: "{{Front}}", backTemplate: "{{Back}}" }]
-  })
-  eduCardTemplates: FlashcardTemplateDto[];
-
-  @IsString()
-  @IsOptional()
-  @ApiPropertyOptional({ description: 'Optional CSS for styling flashcards of this model.' })
-  eduStylingCSS?: string;
+  @Type(() => CardTemplateDto)
+  @ApiProperty({ type: [CardTemplateDto] })
+  cardTemplates: CardTemplateDto[];
 }

@@ -759,9 +759,8 @@ export class AppService {
               name: flashcardModel.name,
               summary: flashcardModel.summary,
               url: flashcardModel.activityPubId, // Canonical URL is its ID
-              'edu:fields': flashcardModel.eduFields,
-              'edu:cardTemplates': flashcardModel.eduCardTemplates,
-              'edu:stylingCSS': flashcardModel.eduStylingCSS,
+              'edu:fields': flashcardModel.fields,
+              'edu:cardTemplates': flashcardModel.cardTemplates,
               published: flashcardModel.createdAt.toISOString(),
               updated: flashcardModel.updatedAt.toISOString(),
               // data: flashcardModel,

@@ -36,7 +36,7 @@ export class FlashcardModelService {
       throw new ConflictException(`Flashcard model with name '${dto.name}' already exists.`);
     }
 
-    const activityPubId = `${this.instanceBaseUrl}/flashcard-models/${randomUUID()}`;
+    const activityPubId = `${this.instanceBaseUrl}/objects/${randomUUID()}`;
 
     const newModel = this.flashcardModelRepository.create({
       ...dto,
