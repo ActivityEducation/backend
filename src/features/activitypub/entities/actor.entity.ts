@@ -9,9 +9,12 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  OneToMany,
 } from 'typeorm';
 import { UserEntity } from '../../auth/entities/user.entity'; // Import UserEntity
 import { Exclude } from 'class-transformer'; // NEW: Import Exclude
+import { ReviewLogEntity } from 'src/features/educationpub/entities/review-log.entity';
+import { SpacedRepetitionScheduleEntity } from 'src/features/educationpub/entities/spaced-repetition-schedule.entity';
 
 /**
  * Represents an ActivityPub Actor (e.g., as:Person, as:Application).
@@ -70,6 +73,12 @@ export class ActorEntity {
 
   @Column({ type: 'jsonb', nullable: true })
   data?: object; // Full JSON-LD payload of the ActivityPub actor profile
+
+  @OneToMany(() => ReviewLogEntity, (reviewLog) => reviewLog.actor)
+  reviewLogs: ReviewLogEntity[];
+
+  @OneToMany(() => SpacedRepetitionScheduleEntity, (schedule) => schedule.actor)
+  schedules: SpacedRepetitionScheduleEntity[];
 
   @CreateDateColumn()
   createdAt: Date;

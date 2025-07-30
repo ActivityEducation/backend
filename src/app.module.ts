@@ -1,6 +1,3 @@
-// src/app.module.ts
-// Refactored to include new entities
-
 import { Module, Logger } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -8,15 +5,12 @@ import { BullModule } from '@nestjs/bullmq';
 import Redis from 'ioredis';
 import * as Joi from 'joi';
 
-// Import refactored feature modules
 import { CoreModule } from './core/core.module';
-import { CommonModule } from './shared/common.module'; // The new common module
+import { CommonModule } from './shared/common.module';
 import { AuthModule } from './features/auth/auth.module';
 import { ModerationModule } from './features/moderation/moderation.module';
-import { ActivityPubModule } from './features/activitypub/activitypub.module'; // The new ActivityPub module
+import { ActivityPubModule } from './features/activitypub/activitypub.module';
 
-// Import entities from their new feature locations
-// FIX: Re-import all entities here for TypeOrmModule.forRootAsync
 import { ActorEntity } from './features/activitypub/entities/actor.entity';
 import { ActivityEntity } from './features/activitypub/entities/activity.entity';
 import { FollowEntity } from './features/activitypub/entities/follow.entity';
@@ -27,7 +21,7 @@ import { AnnounceEntity } from './features/activitypub/entities/announce.entity'
 import { EducationPubModule } from './features/educationpub/educationpub.module';
 import { FlashcardEntity } from './features/educationpub/entities/flashcard.entity';
 import { FlashcardModelEntity } from './features/educationpub/entities/flashcard-model.entity';
-import { Flashcard } from './features/educationpub/views/flashcard.view'; // View, not an entity, but sometimes included for discovery
+import { Flashcard } from './features/educationpub/views/flashcard.view';
 import { HealthModule } from './features/health/health.module';
 import { FrontendModule } from './features/frontend/frontend.module';
 import { UserEntity } from './features/auth/entities/user.entity';
@@ -36,6 +30,8 @@ import { RobotsModule } from './features/robots/robots.module';
 import { SitemapEntity } from './features/robots/entities/sitemap.entity';
 import { RobotRuleEntity } from './features/robots/entities/robot-rule.entity';
 import { PermissionConfigService } from './shared/config/permission-config.service';
+import { ReviewLogEntity } from './features/educationpub/entities/review-log.entity';
+import { SpacedRepetitionScheduleEntity } from './features/educationpub/entities/spaced-repetition-schedule.entity';
 
 /**
  * AppModule
@@ -102,7 +98,7 @@ import { PermissionConfigService } from './shared/config/permission-config.servi
     EducationPubModule,
     HealthModule,
     RobotsModule,
-    FrontendModule,
+    // FrontendModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.
@@ -131,7 +127,9 @@ import { PermissionConfigService } from './shared/config/permission-config.servi
           UserEntity,
           ProcessedActivityEntity,
           RobotRuleEntity,
-          SitemapEntity
+          SitemapEntity,
+          ReviewLogEntity,
+          SpacedRepetitionScheduleEntity
         ],
         dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.

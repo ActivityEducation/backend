@@ -1,8 +1,10 @@
 // src/features/educationpub/entities/flashcard.entity.ts
 
-import { Entity, PrimaryGeneratedColumn, Column, Index, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, Index, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
 import { FlashcardModelEntity } from './flashcard-model.entity';
 import { ActorEntity } from '../../activitypub/entities/actor.entity';
+import { ReviewLogEntity } from './review-log.entity';
+import { SpacedRepetitionScheduleEntity } from './spaced-repetition-schedule.entity';
 
 @Entity('flashcards')
 export class FlashcardEntity {
@@ -44,6 +46,12 @@ export class FlashcardEntity {
 
   @Column({ type: 'text', nullable: true })
   eduSourceLanguage?: string; // e.g., "en"
+
+  @OneToMany(() => ReviewLogEntity, (reviewLog) => reviewLog.flashcard)
+  reviewLogs: ReviewLogEntity[];
+
+  @OneToMany(() => SpacedRepetitionScheduleEntity, (schedule) => schedule.flashcard)
+  schedules: SpacedRepetitionScheduleEntity[];
 
   @CreateDateColumn()
   createdAt: Date;
