@@ -1,6 +1,6 @@
 // src/features/educationpub/controllers/flashcard.controller.ts
 import { Controller, Post, Get, Param, Body, Put, Delete, HttpCode, HttpStatus, UseGuards, UseInterceptors, ClassSerializerInterceptor, Query, DefaultValuePipe, ParseIntPipe, NotFoundException } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiParam, ApiBearerAuth, ApiOkResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiParam, ApiBearerAuth, ApiOkResponse, ApiQuery } from '@nestjs/swagger';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
 import { LoggerService } from 'src/shared/services/logger.service';
 import { CreateFlashcardPayload } from '../dto/create-fashcard.dto';
@@ -25,6 +25,18 @@ export class EducationPubController {
     private readonly flashcardService: FlashcardService, private readonly logger: LoggerService,
     @InjectRepository(ActorEntity) private readonly actorRepository: Repository<ActorEntity>,
   ) { this.logger.setContext('EducationPubController'); }
+
+  @Get('related')
+  @HttpCode(HttpStatus.OK)
+  @ApiQuery({ name: 'id', required: true, description: 'The ID of the flashcard', })
+  async relatedFlashcards(@Query('id') id: string) {
+    return this.flashcardService.getRelatedFlashcards(id, 6);
+  }
+
+  @Post('flush-knowledge-graph')
+  flushKnowledgeGraph() {
+    return this.flashcardService.recategorizeAllFlashcards();
+  }
 
   @Get()
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
@@ -69,6 +81,28 @@ export class EducationPubController {
     const actor = await this.actorRepository.findOne({ where: { id: localActorInternalId } });
     if (!actor || actor.preferredUsername !== username) { throw new NotFoundException(`Actor '${username}' not found or you are not authorized to create content for this user.`); }
     return this.flashcardService.createFlashcard(localActorInternalId, createFlashcardPayload, isPublicQuery);
+  }
+
+  @Post(':username/mass-import')
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, AbilitiesGuard)
+  @CheckAbilities(['create', FlashcardEntity.name])
+  @ApiOperation({ summary: 'Create a new EducationPub Flashcard for a user' })
+  @ApiParam({ name: 'username', description: 'The preferred username of the actor creating the flashcard. Must match authenticated user.', })
+  @ApiBody({ type: CreateFlashcardPayload, description: 'The payload for the new flashcard.', })
+  @ApiResponse({ status: 201, description: 'Flashcard created and enqueued for Fediverse delivery if public.', type: FlashcardView, })
+  @ApiResponse({ status: 400, description: 'Bad Request (validation errors).' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Forbidden (username mismatch).' })
+  @ApiResponse({ status: 404, description: 'Actor or Flashcard Model not found.' })
+  @ApiResponse({ status: 500, description: 'Internal server error.' })
+  async createFlashcards(@Param('username') username: string, @User('actor.id') localActorInternalId: string, @Body() createFlashcardPayload: CreateFlashcardPayload[], @Query('isPublic', new DefaultValuePipe(false)) isPublicQuery: boolean,): Promise<FlashcardEntity[]> {
+    this.logger.log(`Received request to create flashcard for user: ${username}, authenticated as actor internal ID: ${localActorInternalId}`);
+    const actor = await this.actorRepository.findOne({ where: { id: localActorInternalId } });
+    if (!actor || actor.preferredUsername !== username) { throw new NotFoundException(`Actor '${username}' not found or you are not authorized to create content for this user.`); }
+    return Promise.all(createFlashcardPayload.map(async (payload) => {
+      return await this.flashcardService.createFlashcard(localActorInternalId, payload, isPublicQuery);
+    }));
   }
 
   @Put(':id')

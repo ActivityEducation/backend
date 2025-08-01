@@ -32,6 +32,10 @@ import { RobotRuleEntity } from './features/robots/entities/robot-rule.entity';
 import { PermissionConfigService } from './shared/config/permission-config.service';
 import { ReviewLogEntity } from './features/educationpub/entities/review-log.entity';
 import { SpacedRepetitionScheduleEntity } from './features/educationpub/entities/spaced-repetition-schedule.entity';
+import { PuzzleModule } from './features/puzzles/puzzles.module';
+import { KnowledgeGraphModule } from './features/knowledge-graph/knowledge-graph.module';
+import { Node } from './features/knowledge-graph/entities/node.entity';
+import { Edge } from './features/knowledge-graph/entities/edge.entity';
 
 /**
  * AppModule
@@ -98,6 +102,8 @@ import { SpacedRepetitionScheduleEntity } from './features/educationpub/entities
     EducationPubModule,
     HealthModule,
     RobotsModule,
+    PuzzleModule,
+    KnowledgeGraphModule,
     // FrontendModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
@@ -129,9 +135,11 @@ import { SpacedRepetitionScheduleEntity } from './features/educationpub/entities
           RobotRuleEntity,
           SitemapEntity,
           ReviewLogEntity,
-          SpacedRepetitionScheduleEntity
+          SpacedRepetitionScheduleEntity,
+          Node,
+          Edge,
         ],
-        dropSchema: true, // WARNING: 'dropSchema: true' is for development only.
+        // dropSchema: false, // WARNING: 'dropSchema: true' is for development only.
         synchronize: true, // WARNING: 'synchronize: true' is for development only.
       }),
     }),

@@ -3,6 +3,8 @@
 /node_modules
 /build
 
+.cache
+
 src.zip
 
 nginx/conf.d/example.com.conf

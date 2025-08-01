@@ -56,6 +56,8 @@ async function bootstrap() {
   });
   setupSwagger(app);
 
+  app.enableShutdownHooks();
+
   await app.listen(80);
   loggerService.log(`Application is running on: ${await app.getUrl()}`, 'Bootstrap');
 }

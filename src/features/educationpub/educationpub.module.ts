@@ -14,9 +14,11 @@ import { SpacedRepetitionScheduleEntity } from './entities/spaced-repetition-sch
 import { SpacedRepetitionService } from './services/spaced-repetition.service';
 import { FSRSLogic } from './services/fsrs.logic';
 import { SpacedRepetitionController } from './controllers/spaced-repetition.controller';
+import { KnowledgeGraphModule } from '../knowledge-graph/knowledge-graph.module';
 
 @Module({
   imports: [
+    KnowledgeGraphModule,
     TypeOrmModule.forFeature([
         FlashcardModelEntity, 
         FlashcardEntity, 

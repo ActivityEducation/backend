@@ -1,7 +1,12 @@
 // src/features/educationpub/services/flashcard.service.ts
 // Updated to implement CRUD for FlashcardEntity and interact with Outbox
 
-import { Injectable, NotFoundException, InternalServerErrorException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  InternalServerErrorException,
+  ConflictException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm';
 import { FlashcardEntity } from '../entities/flashcard.entity';
@@ -18,6 +23,8 @@ import { ActivityEntity } from 'src/features/activitypub/entities/activity.entit
 import { AnnounceEntity } from 'src/features/activitypub/entities/announce.entity';
 import { LikeEntity } from 'src/features/activitypub/entities/like.entity';
 import { ContentObjectEntity } from 'src/features/activitypub/entities/content-object.entity'; // For linking liked/announced objects if they are local
+import { InferenceService } from 'src/features/knowledge-graph/services/inference.service';
+import { KnowledgeGraphService } from 'src/features/knowledge-graph/services/knowledge-graph.service';
 
 @Injectable()
 export class FlashcardService {
@@ -39,8 +46,94 @@ export class FlashcardService {
     @InjectQueue('outbox') private outboxQueue: Queue,
     private readonly logger: LoggerService,
     private readonly appService: AppService,
+    private readonly inferenceService: InferenceService,
+    private readonly knowledgeGraphService: KnowledgeGraphService,
   ) {
     this.logger.setContext('FlashcardService');
+  }
+
+  /**
+   * Extracts a categorization-ready string from a flashcard,
+   * using only the `text` fields defined by its `eduModel`.
+   */
+  public generateFlashcardTextStream(flashcard: FlashcardEntity): string {
+    const eduModel = flashcard.eduModel;
+    const fieldsData = flashcard.eduFieldsData;
+    const outputParts: string[] = [];
+
+    if (!eduModel || !Array.isArray(eduModel.fields) || !fieldsData) {
+      return '';
+    }
+
+    for (const field of eduModel.fields) {
+      const isTextField = field.type === 'text';
+      const value = fieldsData[field.name];
+
+      if (isTextField && typeof value === 'string' && value.trim() !== '') {
+        outputParts.push(`${value}`.trim());
+      }
+    }
+
+    return outputParts.join('; ');
+  }
+
+  public async recategorizeAllFlashcards() {
+    this.logger.log('Clearing existing knowledge graph...');
+    await this.knowledgeGraphService.clearGraph();
+
+    this.logger.log('Fetching all flashcards to queue for recategorization...');
+    const flashcards = await this.flashcardRepository.find({
+      select: ['id'], // We only need the ID to queue the job
+    });
+
+    this.logger.log(`Queuing ${flashcards.length} flashcards for inference...`);
+    for (const flashcard of flashcards) {
+      try {
+        // Queue the task instead of processing it directly
+        await this.inferenceService.queueInferenceTask(flashcard.id);
+      } catch (error) {
+        this.logger.error(
+          `Failed to queue flashcard ${flashcard.id}`,
+          error.stack,
+        );
+      }
+    }
+    this.logger.log('All flashcards have been queued for processing.');
+  }
+
+  /**
+   * Finds flashcards that are semantically related to a given flashcard
+   * by traversing the knowledge graph to find shared topics.
+   * @param flashcardId The ID of the flashcard to find relations for.
+   * @returns A list of related flashcard IDs.
+   */
+  async getRelatedFlashcards(
+    flashcardId: string,
+    depth: number = 100,
+  ): Promise<FlashcardEntity[]> {
+    this.logger.log(`Finding related flashcards for ID: ${flashcardId}`);
+    try {
+      const relatedFlashcards =
+        await this.knowledgeGraphService.findRelatedFlashcards(
+          flashcardId,
+          depth,
+        );
+      const flashcardIds = relatedFlashcards.map(
+        (flashcard) => flashcard.flashcardId,
+      );
+
+      return this.flashcardRepository.find({
+        where: { activityPubId: In(flashcardIds) },
+        relations: [],
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to find related flashcards for ID: ${flashcardId}`,
+        error.stack,
+      );
+      // Depending on requirements, you might want to return an empty array or re-throw
+      return [];
+    }
   }
 
   /**
@@ -57,7 +150,9 @@ export class FlashcardService {
   ): Promise<FlashcardEntity> {
     this.logger.log(`Attempting to create flashcard for actor ID: ${actorId}`);
 
-    const creatorActor = await this.actorRepository.findOne({ where: { id: actorId } });
+    const creatorActor = await this.actorRepository.findOne({
+      where: { id: actorId },
+    });
     if (!creatorActor) {
       throw new NotFoundException(`Actor with ID '${actorId}' not found.`);
     }
@@ -66,7 +161,9 @@ export class FlashcardService {
       where: { activityPubId: createFlashcardDto.eduModel },
     });
     if (!flashcardModel) {
-      throw new NotFoundException(`Flashcard model with ActivityPub ID '${createFlashcardDto.eduModel}' not found.`);
+      throw new NotFoundException(
+        `Flashcard model with ActivityPub ID '${createFlashcardDto.eduModel}' not found.`,
+      );
     }
 
     const flashcardActivityPubId = `${this.appService.getInstanceBaseUrl()}/objects/${randomUUID()}`;
@@ -101,8 +198,13 @@ export class FlashcardService {
    * @param limit Items per page.
    * @returns Paginated list of FlashcardEntity.
    */
-  async findAllFlashcardsPaginated(page: number, limit: number): Promise<[FlashcardEntity[], number]> {
-    this.logger.debug(`Fetching all flashcards, page: ${page}, limit: ${limit}`);
+  async findAllFlashcardsPaginated(
+    page: number,
+    limit: number,
+  ): Promise<[FlashcardEntity[], number]> {
+    this.logger.debug(
+      `Fetching all flashcards, page: ${page}, limit: ${limit}`,
+    );
     return this.flashcardRepository.findAndCount({
       where: { deletedAt: IsNull() },
       skip: (page - 1) * limit,
@@ -124,7 +226,9 @@ export class FlashcardService {
       relations: ['eduModel', 'creator'],
     });
     if (!flashcard) {
-      throw new NotFoundException(`Flashcard with ID '${id}' not found or is deleted.`);
+      throw new NotFoundException(
+        `Flashcard with ID '${id}' not found or is deleted.`,
+      );
     }
     return flashcard;
   }
@@ -134,14 +238,18 @@ export class FlashcardService {
    * @param activityPubId ActivityPub URI of the flashcard.
    * @returns The FlashcardEntity.
    */
-  async findFlashcardByActivityPubId(activityPubId: string): Promise<FlashcardEntity> {
+  async findFlashcardByActivityPubId(
+    activityPubId: string,
+  ): Promise<FlashcardEntity> {
     this.logger.debug(`Fetching flashcard by ActivityPub ID: ${activityPubId}`);
     const flashcard = await this.flashcardRepository.findOne({
       where: { activityPubId, deletedAt: IsNull() },
       relations: ['eduModel', 'creator'],
     });
     if (!flashcard) {
-      throw new NotFoundException(`Flashcard with ActivityPub ID '${activityPubId}' not found or is deleted.`);
+      throw new NotFoundException(
+        `Flashcard with ActivityPub ID '${activityPubId}' not found or is deleted.`,
+      );
     }
     return flashcard;
   }
@@ -158,14 +266,23 @@ export class FlashcardService {
     actorId: string, // Internal DB ID of the actor updating
     updateFlashcardDto: UpdateFlashcardDto,
   ): Promise<FlashcardEntity> {
-    this.logger.log(`Attempting to update flashcard with ID: ${id} by actor ID: ${actorId}`);
+    this.logger.log(
+      `Attempting to update flashcard with ID: ${id} by actor ID: ${actorId}`,
+    );
 
     const flashcard = await this.findFlashcardById(id);
 
-    const updaterActor = await this.actorRepository.findOne({ where: { id: actorId } });
-    if (!updaterActor || updaterActor.activityPubId !== flashcard.attributedToActivityPubId) {
+    const updaterActor = await this.actorRepository.findOne({
+      where: { id: actorId },
+    });
+    if (
+      !updaterActor ||
+      updaterActor.activityPubId !== flashcard.attributedToActivityPubId
+    ) {
       // Only the original creator can update
-      throw new NotFoundException(`Actor with ID '${actorId}' is not authorized to update this flashcard.`);
+      throw new NotFoundException(
+        `Actor with ID '${actorId}' is not authorized to update this flashcard.`,
+      );
     }
 
     if (updateFlashcardDto.eduModel) {
@@ -173,7 +290,9 @@ export class FlashcardService {
         where: { activityPubId: updateFlashcardDto.eduModel },
       });
       if (!flashcardModel) {
-        throw new NotFoundException(`Flashcard model with ActivityPub ID '${updateFlashcardDto.eduModel}' not found.`);
+        throw new NotFoundException(
+          `Flashcard model with ActivityPub ID '${updateFlashcardDto.eduModel}' not found.`,
+        );
       }
       flashcard.modelId = flashcardModel.id;
       flashcard.eduModel = flashcardModel;
@@ -200,14 +319,23 @@ export class FlashcardService {
     id: string,
     actorId: string, // Internal DB ID of the actor deleting
   ): Promise<void> {
-    this.logger.log(`Attempting to delete flashcard with ID: ${id} by actor ID: ${actorId}`);
+    this.logger.log(
+      `Attempting to delete flashcard with ID: ${id} by actor ID: ${actorId}`,
+    );
 
     const flashcard = await this.findFlashcardById(id);
 
-    const deleterActor = await this.actorRepository.findOne({ where: { id: actorId } });
-    if (!deleterActor || deleterActor.activityPubId !== flashcard.attributedToActivityPubId) {
+    const deleterActor = await this.actorRepository.findOne({
+      where: { id: actorId },
+    });
+    if (
+      !deleterActor ||
+      deleterActor.activityPubId !== flashcard.attributedToActivityPubId
+    ) {
       // Only the original creator can delete
-      throw new NotFoundException(`Actor with ID '${actorId}' is not authorized to delete this flashcard.`);
+      throw new NotFoundException(
+        `Actor with ID '${actorId}' is not authorized to delete this flashcard.`,
+      );
     }
 
     // Soft delete the flashcard
@@ -225,10 +353,17 @@ export class FlashcardService {
    * @param flashcardId The internal ID of the flashcard being liked.
    * @param localActorId The internal ID of the local actor performing the like.
    */
-  async handleFlashcardLike(flashcardId: string, localActorId: string): Promise<{ message: string; liked: boolean }> {
-    this.logger.log(`Actor ID '${localActorId}' attempting to like flashcard ID: ${flashcardId}`);
+  async handleFlashcardLike(
+    flashcardId: string,
+    localActorId: string,
+  ): Promise<{ message: string; liked: boolean }> {
+    this.logger.log(
+      `Actor ID '${localActorId}' attempting to like flashcard ID: ${flashcardId}`,
+    );
     const flashcard = await this.findFlashcardById(flashcardId);
-    const actor = await this.actorRepository.findOne({ where: { id: localActorId } });
+    const actor = await this.actorRepository.findOne({
+      where: { id: localActorId },
+    });
     if (!actor) {
       throw new NotFoundException(`Actor with ID '${localActorId}' not found.`);
     }
@@ -242,8 +377,12 @@ export class FlashcardService {
     });
 
     if (existingLike) {
-      this.logger.log(`Flashcard '${flashcardId}' already liked by actor '${localActorId}'. Skipping re-like.`);
-      throw new ConflictException(`Flashcard '${flashcardId}' already liked by this actor.`);
+      this.logger.log(
+        `Flashcard '${flashcardId}' already liked by actor '${localActorId}'. Skipping re-like.`,
+      );
+      throw new ConflictException(
+        `Flashcard '${flashcardId}' already liked by this actor.`,
+      );
     }
 
     // Save local like record
@@ -254,7 +393,9 @@ export class FlashcardService {
       likedObject: flashcard, // Link relationship
     });
     await this.likeRepository.save(newLike);
-    this.logger.log(`Local like record created for flashcard '${flashcardId}' by actor '${localActorId}'.`);
+    this.logger.log(
+      `Local like record created for flashcard '${flashcardId}' by actor '${localActorId}'.`,
+    );
 
     // Dispatch the Like ActivityPub activity via FlashcardService
     await this.dispatchLikeActivity(actor, flashcard.activityPubId);
@@ -270,10 +411,17 @@ export class FlashcardService {
    * @param flashcardId The internal ID of the flashcard being boosted.
    * @param localActorId The internal ID of the local actor performing the boost.
    */
-  async handleFlashcardBoost(flashcardId: string, localActorId: string): Promise<{ message: string; boosted: boolean }> {
-    this.logger.log(`Actor ID '${localActorId}' attempting to boost flashcard ID: ${flashcardId}`);
+  async handleFlashcardBoost(
+    flashcardId: string,
+    localActorId: string,
+  ): Promise<{ message: string; boosted: boolean }> {
+    this.logger.log(
+      `Actor ID '${localActorId}' attempting to boost flashcard ID: ${flashcardId}`,
+    );
     const flashcard = await this.findFlashcardById(flashcardId);
-    const actor = await this.actorRepository.findOne({ where: { id: localActorId } });
+    const actor = await this.actorRepository.findOne({
+      where: { id: localActorId },
+    });
     if (!actor) {
       throw new NotFoundException(`Actor with ID '${localActorId}' not found.`);
     }
@@ -287,8 +435,12 @@ export class FlashcardService {
     });
 
     if (existingAnnounce) {
-      this.logger.log(`Flashcard '${flashcardId}' already boosted by actor '${localActorId}'. Skipping re-boost.`);
-      throw new ConflictException(`Flashcard '${flashcardId}' already boosted by this actor.`);
+      this.logger.log(
+        `Flashcard '${flashcardId}' already boosted by actor '${localActorId}'. Skipping re-boost.`,
+      );
+      throw new ConflictException(
+        `Flashcard '${flashcardId}' already boosted by this actor.`,
+      );
     }
 
     // Save local announce record
@@ -299,7 +451,9 @@ export class FlashcardService {
       announcedObject: flashcard, // Link relationship
     });
     await this.announceRepository.save(newAnnounce);
-    this.logger.log(`Local announce record created for flashcard '${flashcardId}' by actor '${localActorId}'.`);
+    this.logger.log(
+      `Local announce record created for flashcard '${flashcardId}' by actor '${localActorId}'.`,
+    );
 
     // Dispatch the Announce ActivityPub activity via FlashcardService
     await this.dispatchAnnounceActivity(actor, flashcard.activityPubId);
@@ -312,7 +466,10 @@ export class FlashcardService {
 
   // --- ActivityPub Dispatch Methods (private helpers) ---
 
-  async dispatchCreateActivity(flashcard: FlashcardEntity, actor: ActorEntity): Promise<void> {
+  async dispatchCreateActivity(
+    flashcard: FlashcardEntity,
+    actor: ActorEntity,
+  ): Promise<void> {
     const activityUUID = randomUUID();
     const createActivityId = `${this.appService.getInstanceBaseUrl()}/activities/${activityUUID}`;
 
@@ -337,8 +494,12 @@ export class FlashcardService {
       'edu:model': flashcard.eduModel.activityPubId,
       'edu:fieldsData': flashcard.eduFieldsData,
       ...(flashcard.eduTags && { 'edu:tags': flashcard.eduTags }),
-      ...(flashcard.eduTargetLanguage && { 'edu:targetLanguage': flashcard.eduTargetLanguage }),
-      ...(flashcard.eduSourceLanguage && { 'edu:sourceLanguage': flashcard.eduSourceLanguage }),
+      ...(flashcard.eduTargetLanguage && {
+        'edu:targetLanguage': flashcard.eduTargetLanguage,
+      }),
+      ...(flashcard.eduSourceLanguage && {
+        'edu:sourceLanguage': flashcard.eduSourceLanguage,
+      }),
     };
 
     const createActivityPayload = {
@@ -379,10 +540,15 @@ export class FlashcardService {
         backoff: { type: 'exponential', delay: 1000 },
       },
     );
-    this.logger.log(`'Create' activity enqueued for flashcard: ${flashcard.activityPubId}`);
+    this.logger.log(
+      `'Create' activity enqueued for flashcard: ${flashcard.activityPubId}`,
+    );
   }
 
-  async dispatchUpdateActivity(flashcard: FlashcardEntity, actor: ActorEntity): Promise<void> {
+  async dispatchUpdateActivity(
+    flashcard: FlashcardEntity,
+    actor: ActorEntity,
+  ): Promise<void> {
     const activityUUID = randomUUID();
     const updateActivityId = `${this.appService.getInstanceBaseUrl()}/activities/${activityUUID}`;
 
@@ -407,8 +573,12 @@ export class FlashcardService {
       'edu:model': flashcard.eduModel.activityPubId,
       'edu:fieldsData': flashcard.eduFieldsData,
       ...(flashcard.eduTags && { 'edu:tags': flashcard.eduTags }),
-      ...(flashcard.eduTargetLanguage && { 'edu:targetLanguage': flashcard.eduTargetLanguage }),
-      ...(flashcard.eduSourceLanguage && { 'edu:sourceLanguage': flashcard.eduSourceLanguage }),
+      ...(flashcard.eduTargetLanguage && {
+        'edu:targetLanguage': flashcard.eduTargetLanguage,
+      }),
+      ...(flashcard.eduSourceLanguage && {
+        'edu:sourceLanguage': flashcard.eduSourceLanguage,
+      }),
     };
 
     const updateActivityPayload = {
@@ -449,10 +619,15 @@ export class FlashcardService {
         backoff: { type: 'exponential', delay: 1000 },
       },
     );
-    this.logger.log(`'Update' activity enqueued for flashcard: ${flashcard.activityPubId}`);
+    this.logger.log(
+      `'Update' activity enqueued for flashcard: ${flashcard.activityPubId}`,
+    );
   }
 
-  async dispatchDeleteActivity(flashcard: FlashcardEntity, actor: ActorEntity): Promise<void> {
+  async dispatchDeleteActivity(
+    flashcard: FlashcardEntity,
+    actor: ActorEntity,
+  ): Promise<void> {
     const activityUUID = randomUUID();
     const deleteActivityId = `${this.appService.getInstanceBaseUrl()}/activities/${activityUUID}`;
 
@@ -494,11 +669,18 @@ export class FlashcardService {
         backoff: { type: 'exponential', delay: 1000 },
       },
     );
-    this.logger.log(`'Delete' activity enqueued for flashcard: ${flashcard.activityPubId}`);
+    this.logger.log(
+      `'Delete' activity enqueued for flashcard: ${flashcard.activityPubId}`,
+    );
   }
 
-  async dispatchLikeActivity(actor: ActorEntity, objectToLikeUri: string): Promise<void> {
-    this.logger.log(`Actor '${actor.activityPubId}' dispatching Like for object: ${objectToLikeUri}`);
+  async dispatchLikeActivity(
+    actor: ActorEntity,
+    objectToLikeUri: string,
+  ): Promise<void> {
+    this.logger.log(
+      `Actor '${actor.activityPubId}' dispatching Like for object: ${objectToLikeUri}`,
+    );
     const activityUUID = randomUUID();
     const likeActivityId = `${this.appService.getInstanceBaseUrl()}/activities/${activityUUID}`;
 
@@ -539,8 +721,13 @@ export class FlashcardService {
     this.logger.log(`'Like' activity enqueued for object: ${objectToLikeUri}`);
   }
 
-  async dispatchAnnounceActivity(actor: ActorEntity, objectToAnnounceUri: string): Promise<void> {
-    this.logger.log(`Actor '${actor.activityPubId}' dispatching Announce for object: ${objectToAnnounceUri}`);
+  async dispatchAnnounceActivity(
+    actor: ActorEntity,
+    objectToAnnounceUri: string,
+  ): Promise<void> {
+    this.logger.log(
+      `Actor '${actor.activityPubId}' dispatching Announce for object: ${objectToAnnounceUri}`,
+    );
     const activityUUID = randomUUID();
     const announceActivityId = `${this.appService.getInstanceBaseUrl()}/activities/${activityUUID}`;
 
@@ -578,6 +765,8 @@ export class FlashcardService {
         backoff: { type: 'exponential', delay: 1000 },
       },
     );
-    this.logger.log(`'Announce' activity enqueued for object: ${objectToAnnounceUri}`);
+    this.logger.log(
+      `'Announce' activity enqueued for object: ${objectToAnnounceUri}`,
+    );
   }
 }
