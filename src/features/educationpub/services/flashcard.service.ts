@@ -77,6 +77,10 @@ export class FlashcardService {
     return outputParts.join('; ');
   }
 
+  public async findNodeIdForFlashcard(id: string) {
+    return this.knowledgeGraphService.findNodeByProperties('Flashcard', { flashcardId: id });
+  }
+
   public async recategorizeAllFlashcards() {
     this.logger.log('Clearing existing knowledge graph...');
     await this.knowledgeGraphService.clearGraph();

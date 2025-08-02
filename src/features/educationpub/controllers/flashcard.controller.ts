@@ -38,6 +38,13 @@ export class EducationPubController {
     return this.flashcardService.recategorizeAllFlashcards();
   }
 
+  @Get('find')
+  public findNodeByFlashcardId(
+    @Query('id') id: string,
+  ) {
+    return this.flashcardService.findNodeIdForFlashcard(id)
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
   @CheckAbilities(['read', FlashcardEntity.name])

@@ -1,9 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNotEmpty, IsNumber, IsUUID } from 'class-validator';
+import { IsIn, IsNotEmpty, IsNumber, IsString, IsUUID } from 'class-validator';
 import { Rating } from '../services/fsrs.logic';
 
 export class SubmitReviewDto {
-  @IsUUID()
+  @IsString()
   @IsNotEmpty()
   @ApiProperty({
     description: 'The ActivityPub URI of the flashcard being reviewed.',

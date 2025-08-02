@@ -80,6 +80,12 @@ export class ActorEntity {
   @OneToMany(() => SpacedRepetitionScheduleEntity, (schedule) => schedule.actor)
   schedules: SpacedRepetitionScheduleEntity[];
 
+  @Column({ type: 'jsonb', nullable: true, comment: "Personalized FSRS weights (w0-w16) for this actor." })
+  fsrs_parameters: Record<string, any>;
+
+  @Column('float', { nullable: true, comment: "The log-loss of the FSRS model fit, indicating review consistency." })
+  fsrs_log_loss: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

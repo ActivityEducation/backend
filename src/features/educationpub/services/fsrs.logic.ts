@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SpacedRepetitionScheduleEntity } from '../entities/spaced-repetition-schedule.entity';
 
 // Default parameters for the FSRS v4 algorithm, as per the research documentation.
-// w0-w16, where w14 is unused.
-const DEFAULT_WEIGHTS = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61];
 const DEFAULT_REQUEST_RETENTION = 0.9;
 const DECAY = -0.5;
+const DEFAULT_WEIGHTS = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61];
 
 export enum Rating {
     Again = 1,
@@ -16,22 +16,44 @@ export enum Rating {
 
 @Injectable()
 export class FSRSLogic {
-    private weights: number[] = DEFAULT_WEIGHTS;
+    private weights: number[];
+
+    constructor(private readonly configService: ConfigService) {
+        this.weights = this.configService.get<number[]>('fsrs.defaultWeights') || DEFAULT_WEIGHTS;
+    }
 
     /**
      * Calculates the initial memory state (Stability and Difficulty) for a new card 
-     * based on the user's first rating.
+     * based on the user's first rating, optionally adjusted by community complexity.
      * @param rating The user's first rating for the card (1-4).
+     * @param cdc_score The community-derived complexity score for the concept.
+     * @param params The actor's personalized FSRS parameters.
      * @returns An object with the initial stability and difficulty.
      */
-    public calculateInitialState(rating: Rating): { stability: number; difficulty: number } {
-        const initialDifficulty = this.weights[4] - (rating - 3) * this.weights[5];
-        const clampedDifficulty = Math.min(Math.max(initialDifficulty, 1), 10);
+    public calculateInitialState(rating: Rating, cdc_score?: number, params?: Record<string, any>): { stability: number; difficulty: number } {
+        const weights = params?.weights || this.weights;
+        let initialDifficulty = weights[4] - (rating - 3) * weights[5];
+        let initialStability = weights[rating - 1];
 
-        return {
-            stability: this.weights[rating - 1],
-            difficulty: clampedDifficulty,
-        };
+        if (cdc_score !== undefined) {
+            const { d_modifier, s_modifier } = this.getComplexityModifiers(cdc_score);
+            initialDifficulty *= d_modifier;
+            initialStability *= s_modifier;
+        }
+
+        const clampedDifficulty = Math.min(Math.max(initialDifficulty, 1), 10);
+        return { stability: initialStability, difficulty: clampedDifficulty };
+    }
+
+    /**
+     * Determines the adjustment modifiers for initial difficulty and stability based on the CDC score.
+     * @param cdc_score The community-derived complexity score.
+     * @returns An object with difficulty and stability modifiers.
+     */
+    private getComplexityModifiers(cdc_score: number): { d_modifier: number, s_modifier: number } {
+        if (cdc_score > 0.7) return { d_modifier: 1.2, s_modifier: 0.7 }; // High Complexity
+        if (cdc_score < 0.3) return { d_modifier: 0.8, s_modifier: 1.5 }; // Low Complexity
+        return { d_modifier: 1.0, s_modifier: 1.0 }; // Medium Complexity
     }
 
     /**
@@ -87,9 +109,6 @@ export class FSRSLogic {
      * @returns The retrievability (R) as a probability between 0 and 1.
      */
     private calculateRetrievability(stability: number, elapsedDays: number): number {
-        // Using 9 * S is a simplification from some FSRS versions.
-        // The core power-law curve is R = (1 + t/S)^-p
-        // For this implementation, we will stick to the documented formula structure.
         return Math.pow(1 + elapsedDays / (9 * stability), DECAY);
     }
     
@@ -103,7 +122,6 @@ export class FSRSLogic {
      */
     private nextDifficulty(d: number, rating: Rating): number {
         const next_d = d - this.weights[6] * (rating - 3);
-        // Clamp the result to the valid difficulty range [1, 10]
         return Math.min(Math.max(next_d, 1), 10);
     }
 
@@ -118,11 +136,9 @@ export class FSRSLogic {
      */
     private nextStability(s: number, d: number, r: number, rating: Rating): number {
         if (rating === Rating.Again) {
-            // Formula for stability after a lapse
             return this.weights[10] * Math.pow(d, -this.weights[11]) * Math.pow(s, this.weights[12]) * Math.exp((1 - r) * this.weights[13]);
         }
         
-        // Formula for stability after a successful review
         const stabilityIncrease = Math.exp(this.weights[7]) *
             (11 - d) *
             Math.pow(s, -this.weights[8]) *
@@ -136,12 +152,11 @@ export class FSRSLogic {
 
     /**
      * Calculates the next review interval in days.
-     * This is derived by inverting the retrievability formula to solve for time 't'.
      * @param s The new stability (S').
      * @returns The next interval in days, rounded and with a minimum of 1.
      */
     private nextInterval(s: number): number {
         const interval = s * (Math.pow(DEFAULT_REQUEST_RETENTION, 1 / DECAY) - 1);
-        return Math.round(Math.max(1, interval)); // Ensure interval is at least 1 day
+        return Math.round(Math.max(1, interval));
     }
 }

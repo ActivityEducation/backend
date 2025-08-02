@@ -16,7 +16,14 @@ export class ReviewLogEntity {
   @Column({ type: 'smallint' }) // 1: Again, 2: Hard, 3: Good, 4: Easy
   rating: number;
 
-  @Column({ type: 'jsonb' })
+  @Column({ type: 'jsonb', comment: "Snapshot of the memory state before the review." })
+  previousState: {
+    difficulty: number;
+    stability: number;
+    retrievability: number;
+  };
+
+  @Column({ type: 'jsonb', comment: "Snapshot of the memory state after the review." })
   state: { stability: number; difficulty: number };
 
   @Column()

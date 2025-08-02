@@ -7,6 +7,7 @@ import { FSRSLogic, Rating } from './fsrs.logic';
 import { ActorEntity } from 'src/features/activitypub/entities/actor.entity';
 import { FlashcardEntity } from '../entities/flashcard.entity';
 import { LoggerService } from 'src/shared/services/logger.service';
+import { KnowledgeGraphService } from 'src/features/knowledge-graph/services/knowledge-graph.service';
 
 @Injectable()
 export class SpacedRepetitionService {
@@ -21,6 +22,7 @@ export class SpacedRepetitionService {
     private flashcardRepository: Repository<FlashcardEntity>,
     private fsrsLogic: FSRSLogic,
     private readonly logger: LoggerService,
+    private readonly knowledgeGraphService: KnowledgeGraphService,
   ) {
     this.logger.setContext('SpacedRepetitionService');
   }
@@ -62,7 +64,20 @@ export class SpacedRepetitionService {
     if (!schedule) {
       // This is the first review for this actor-flashcard pair.
       this.logger.debug(`No existing schedule found. Creating new schedule.`);
-      const initialState = this.fsrsLogic.calculateInitialState(rating);
+      let cdc_score: number | undefined;
+      try {
+        // Find the corresponding node in the knowledge graph
+        const node = await this.knowledgeGraphService.findNodeByProperties('Flashcard', { flashcardId: flashcard.activityPubId });
+        if (node && node.properties.cdc_score) {
+            cdc_score = node.properties.cdc_score;
+            this.logger.log(`Found cdc_score ${cdc_score} for flashcard ${flashcard.activityPubId}.`);
+        }
+      } catch (error) {
+          this.logger.warn(`Could not retrieve cdc_score for flashcard ${flashcard.activityPubId}. Using default schedule.`);
+      }
+
+      const params = actor.fsrs_parameters || undefined;
+      const initialState = this.fsrsLogic.calculateInitialState(rating, cdc_score, params);
       
       schedule = this.scheduleRepository.create({
         actor: actor,
@@ -77,14 +92,22 @@ export class SpacedRepetitionService {
       const interval = this.fsrsLogic['nextInterval'](schedule.stability);
       schedule.due = new Date(reviewTime.getTime() + interval * 24 * 60 * 60 * 1000);
       
+      logEntry.previousState = { difficulty: 1, stability: 0, retrievability: 1 };
       logEntry.scheduled_on = reviewTime; // First review is scheduled for "now"
       logEntry.elapsed_time = 0;
 
     } else {
       // This is a subsequent review.
       this.logger.debug(`Existing schedule found. Updating schedule.`);
+      const elapsedDays = (reviewTime.getTime() - new Date(schedule.last_review).getTime()) / (1000 * 60 * 60 * 24);
+      logEntry.previousState = {
+        difficulty: schedule.difficulty,
+        stability: schedule.stability,
+        retrievability: this.fsrsLogic['calculateRetrievability'](schedule.stability, elapsedDays)
+      };
       logEntry.scheduled_on = schedule.due;
-      logEntry.elapsed_time = (reviewTime.getTime() - new Date(schedule.last_review).getTime()) / 1000; // in seconds
+      // Corrected: Round the elapsed time to the nearest whole number to match integer type in database.
+      logEntry.elapsed_time = Math.round((reviewTime.getTime() - new Date(schedule.last_review).getTime()) / 1000); // in seconds
       
       schedule = this.fsrsLogic.updateState(schedule, rating, reviewTime);
     }

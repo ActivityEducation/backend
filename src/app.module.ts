@@ -36,6 +36,9 @@ import { PuzzleModule } from './features/puzzles/puzzles.module';
 import { KnowledgeGraphModule } from './features/knowledge-graph/knowledge-graph.module';
 import { Node } from './features/knowledge-graph/entities/node.entity';
 import { Edge } from './features/knowledge-graph/entities/edge.entity';
+import { FsrsOptimizationModule } from './features/fsrs-optimization/fsrs-optimization.module';
+import { ComplexityModule } from './features/complexity/complexity.module';
+import { MonitoringModule } from './features/monitoring/monitoring.module';
 
 /**
  * AppModule
@@ -104,6 +107,9 @@ import { Edge } from './features/knowledge-graph/entities/edge.entity';
     RobotsModule,
     PuzzleModule,
     KnowledgeGraphModule,
+    FsrsOptimizationModule,
+    ComplexityModule,
+    MonitoringModule,
     // FrontendModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.

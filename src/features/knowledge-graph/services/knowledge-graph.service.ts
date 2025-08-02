@@ -461,52 +461,6 @@ export class KnowledgeGraphService {
     }
   }
 
-  async addLangResultsToGraph(
-    sequence: string,
-    sequenceNodeId: string,
-    langResults: any[],
-  ): Promise<void> {
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-      for (const entity of langResults) {
-        // Map NER labels to your desired node types (e.g., PER -> Person)
-        console.log(entity);
-        continue; // Skip entities you don't want to store
-
-        // if (entity.score < this.CONFIDENCE_THRESHOLD) {
-        //   continue; // Skip topics with scores below the threshold.
-        // }
-
-        // const entityNode = await this.findOrCreateNode(queryRunner, nodeType, {
-        //   name: entity.word,
-        // });
-
-        // await this.findOrCreateEdge(
-        //   queryRunner,
-        //   sequenceNodeId,
-        //   entityNode.id,
-        //   'language_detection',
-        //   { score: entity.score },
-        // );
-      }
-
-      await queryRunner.commitTransaction();
-      this.logger.log(`NER entities added for sequence: "${sequence}"`);
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      this.logger.error(
-        `NER transaction failed for sequence: "${sequence}". Rolling back.`,
-        error.stack,
-      );
-      throw error;
-    } finally {
-      await queryRunner.release();
-    }
-  }
-
   /**
    * Takes the output from the NER model and adds People, Places, and Things to the graph.
    * @param sequence The original text that was processed.
