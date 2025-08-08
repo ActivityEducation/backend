@@ -1,32 +1,27 @@
 # Stage 1: Build the application
-FROM node:20-alpine AS build
+# Use a slim, Debian-based image for full glibc compatibility
+FROM node:20-slim AS build
 
 WORKDIR /app
 
 COPY package*.json ./
-# If using yarn, use: COPY yarn.lock ./
-
 RUN npm install --frozen-lockfile
-# If using yarn, use: RUN yarn install --frozen-lockfile
 
 COPY . .
-
 RUN npm run build
-# If using yarn, use: RUN yarn build
 
 # Stage 2: Create the final production image
-FROM node:20-alpine AS production
+# Use the same slim image for the final stage
+FROM node:20-slim AS production
 
 WORKDIR /app
 
-# Copy package.json and package-lock.json for production dependencies install (though we'll copy node_modules)
 COPY package*.json ./
 
-# Explicitly copy node_modules from the build stage to the production stage
-# This ensures all dependencies (including dev if necessary for runtime, though ideally not) are present.
+# Copy only the necessary build artifacts and production node_modules
 COPY --from=build /app/node_modules ./node_modules
-
 COPY --from=build /app/dist ./dist
+# The user's Dockerfile copied a 'static' directory, so we'll keep that.
 COPY --from=build /app/static ./static
 
 EXPOSE 80
