@@ -32,7 +32,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
    * @returns The validated UserEntity (with actor relation loaded).
    * @throws UnauthorizedException if the user is not found or validation fails.
    */
-  async validate(payload: { sub: string; username: string; roles: string[] }): Promise<UserEntity> {
+  async validate(payload: { sub: string; username: string; roles: string[] }): Promise<UserEntity | null> {
     this.logger.debug(`Attempting to validate JWT payload for user: ${payload.username} (ID: ${payload.sub})`);
 
     // Use AuthService to find the user by ID, which already loads the 'actor' relation.
@@ -40,14 +40,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (!user) {
       this.logger.warn(`User with ID '${payload.sub}' (username: ${payload.username}) not found during JWT validation.`);
-      throw new UnauthorizedException('User not found.');
+      // throw new UnauthorizedException('User not found.');
+      return null;
     }
 
     // Ensure the roles from the JWT match the roles from the database.
     // This provides an extra layer of security if roles are changed after token issuance.
     if (!user.roles || JSON.stringify(user.roles.sort()) !== JSON.stringify(payload.roles.sort())) {
         this.logger.warn(`User roles in JWT (${payload.roles.join(',')}) do not match current database roles (${user.roles.join(',')}) for user: ${user.username}.`);
-        throw new UnauthorizedException('User roles have changed. Please log in again.');
+        // throw new UnauthorizedException('User roles have changed. Please log in again.');
+        return null;
     }
 
     // Log the successful validation.

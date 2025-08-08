@@ -77,10 +77,9 @@ export class ComplexityService {
   ): Map<string, { actorId: string, dSignals: { signal: number, timestamp: Date }[] }> {
     const aggregated = new Map<string, { actorId: string, dSignals: { signal: number, timestamp: Date }[] }>();
     for (const { log, dSignal } of dSignalScores) {
-        // Correctly find the knowledge graph node ID using the flashcard's ActivityPub ID
         const nodeId = flashcardNodeMap.get(log.flashcard.activityPubId);
 
-        if (nodeId) { // Only process logs that have a corresponding node in the graph
+        if (nodeId) {
             if (!aggregated.has(nodeId)) {
                 aggregated.set(nodeId, { actorId: log.actor.id, dSignals: [] });
             }
@@ -113,12 +112,21 @@ export class ComplexityService {
     const alpha = this.configService.get<number>('complexity.propagationAlpha', 0.85);
     let currentScores = new Map(initialScores);
 
-    const adjacencyList = new Map<string, { targetId: string, weight: number }[]>();
+    // Corrected: Build a bidirectional adjacency list for propagation
+    const adjacencyList = new Map<string, { neighborId: string, weight: number }[]>();
     for (const edge of graph.edges) {
+        const weight = 1.0; // Simplified weight
+        // Add forward edge: source -> target
         if (!adjacencyList.has(edge.sourceId)) {
             adjacencyList.set(edge.sourceId, []);
         }
-        adjacencyList.get(edge.sourceId)!.push({ targetId: edge.targetId, weight: 1.0 }); // Simplified weight
+        adjacencyList.get(edge.sourceId)!.push({ neighborId: edge.targetId, weight });
+
+        // Add reverse edge: target -> source
+        if (!adjacencyList.has(edge.targetId)) {
+            adjacencyList.set(edge.targetId, []);
+        }
+        adjacencyList.get(edge.targetId)!.push({ neighborId: edge.sourceId, weight });
     }
 
     for (let i = 0; i < 10; i++) {
@@ -131,27 +139,18 @@ export class ComplexityService {
                 const totalWeight = neighbors.reduce((sum, n) => sum + n.weight, 0);
                 if (totalWeight > 0) {
                     neighborInfluence = neighbors.reduce((sum, n) => {
-                        return sum + (currentScores.get(n.targetId) || 0) * (n.weight / totalWeight);
+                        return sum + (currentScores.get(n.neighborId) || 0) * (n.weight / totalWeight);
                     }, 0);
                 }
             }
             
-            // Only update the score if there is an initial score or neighbor influence
-            if (initialScore > 0 || neighborInfluence > 0) {
-                const newScore = (1 - alpha) * initialScore + alpha * neighborInfluence;
-                nextScores.set(node.id, newScore);
-            }
+            const newScore = (1 - alpha) * initialScore + alpha * neighborInfluence;
+            nextScores.set(node.id, newScore);
         }
-        currentScores = new Map([...currentScores, ...nextScores]);
+        currentScores = nextScores;
     }
     
-    // Ensure all nodes have a score, defaulting to 0 if they were not touched by the propagation
-    const finalScores = new Map<string, number>();
-    for (const node of graph.nodes) {
-        finalScores.set(node.id, currentScores.get(node.id) || 0);
-    }
-
-    return finalScores;
+    return currentScores;
   }
   
   private async saveCdcScoresToNodes(finalCdcScores: Map<string, number>): Promise<void> {
@@ -161,7 +160,7 @@ export class ComplexityService {
       try {
         for (const [nodeId, score] of finalCdcScores.entries()) {
             await queryRunner.manager.query(
-              `UPDATE "nodes" SET properties = jsonb_set(properties, '{cdc_score}', $1::jsonb, true) WHERE id = $2`,
+              `UPDATE "kg_nodes" SET properties = jsonb_set(properties, '{cdc_score}', $1::jsonb, true) WHERE id = $2`,
               [JSON.stringify(score), nodeId]
             );
         }

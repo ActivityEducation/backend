@@ -6,6 +6,7 @@ import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagg
 import { User } from 'src/shared/decorators/user.decorator';
 import { FlashcardEntity } from '../entities/flashcard.entity';
 import { SpacedRepetitionScheduleEntity } from '../entities/spaced-repetition-schedule.entity';
+import { AddCardDto } from '../dto/add-card.dto';
 
 @ApiTags('EducationPub - Spaced Repetition')
 @Controller('srs')
@@ -34,5 +35,17 @@ export class SpacedRepetitionController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async getDueFlashcards(@User('actor.id') actorId: string): Promise<FlashcardEntity[]> {
     return this.srsService.getDueFlashcards(actorId);
+  }
+
+  @Post('add')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Add a new flashcard to the user\'s study queue' })
+  @ApiResponse({ status: 201, description: 'Card added to the new queue successfully.' })
+  async addCardToQueue(
+    @User('actor.id') actorId: string,
+    @Body() body: AddCardDto,
+  ): Promise<{ message: string }> {
+    await this.srsService.addCardToNewQueue(actorId, body.flashcardActivityPubId);
+    return { message: 'Card added to your study queue.' };
   }
 }

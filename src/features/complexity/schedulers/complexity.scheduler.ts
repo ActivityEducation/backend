@@ -21,7 +21,6 @@ export class ComplexityScheduler {
     try {
       await this.complexityQueue.add(
         'calculate-cdc',
-        {},
         {
           jobId: `cdc-calculation-${new Date().toISOString().split('T')[0]}`, // Daily unique job ID
           removeOnComplete: true,

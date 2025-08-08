@@ -13,13 +13,13 @@ const reactAppPath = join(__dirname, '..', '..', '..', 'static');
       rootPath: reactAppPath, // Use the dynamically determined path
       serveRoot: '/app', // Your React app will be served from /app/
       exclude: [
-        /^\/api\/.*/.source,
-        /^\/robots\.txt$/.source,
-        /^\/\.well-known\/.*/.source,
-        /^\/nodeinfo\/.*/.source,
-        /^\/ns\/.*/.source,
-        /^\/swagger(\/.*)?$/.source,
-        /^\/health$/.source,
+        'api{/*path}',
+        'rebots.txt',
+        '.well-known{/*path}',
+        'nodeinfo{/*path}',
+        'ns{/*path}',
+        'swagger{/*path}',
+        'health',
       ], 
       // renderPath: 'index.html', // Essential for client-side routing and refreshes
 

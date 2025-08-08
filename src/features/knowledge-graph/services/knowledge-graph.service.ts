@@ -17,7 +17,7 @@ import { FlashcardEntity } from 'src/features/educationpub/entities/flashcard.en
 export class KnowledgeGraphService {
   private readonly logger = new Logger(KnowledgeGraphService.name);
   // Define a confidence threshold to filter low-score topics
-  private readonly CONFIDENCE_THRESHOLD = 0.65;
+  private readonly CONFIDENCE_THRESHOLD = 0.60;
 
   constructor(
     @InjectRepository(Node)

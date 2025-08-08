@@ -25,8 +25,10 @@ function generateFlashcardTextStream(flashcard: FlashcardEntity): string {
     }
 
     for (const field of eduModel.fields) {
-        const isTextField = field.type === 'text' && field.name !== 'category';
-        const value = fieldsData[field.name];
+        const isTextField = field.type === 'text';
+        // FIX: Use the field's 'id' to look up the corresponding value in fieldsData,
+        // as the 'id' is the key in the data object.
+        const value = fieldsData[field.id];
 
         if (isTextField && typeof value === 'string' && value.trim() !== '') {
             outputParts.push(value.trim());

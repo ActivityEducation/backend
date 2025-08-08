@@ -110,7 +110,7 @@ import { MonitoringModule } from './features/monitoring/monitoring.module';
     FsrsOptimizationModule,
     ComplexityModule,
     MonitoringModule,
-    // FrontendModule,
+    FrontendModule,
 
     // Configure TypeORM asynchronously to use ConfigService for database connection details.
     // This allows database settings to be loaded from environment variables.

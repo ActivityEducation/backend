@@ -25,6 +25,7 @@ import { randomUUID } from 'crypto';
 import { ActorService } from 'src/features/activitypub/services/actor.service';
 import { normalizeUrl } from 'src/shared/utils/url-normalizer';
 import { Request } from 'express';
+import { UserEntity } from 'src/features/auth/entities/user.entity';
 
 /**
  * AppService
@@ -623,7 +624,7 @@ export class AppService {
    * @param perPage The number of items per page.
    * @returns An ActivityPub OrderedCollection page.
    */
-  async getCreatedFlashcardsCollection(username: string, page: number, perPage: number): Promise<any> {
+  async getCreatedFlashcardsCollection(username: string, page: number, perPage: number, activeUser: UserEntity | null): Promise<any> {
       this.logger.debug(`Fetching created flashcards for actor: ${username}, page: ${page}, perPage: ${perPage}`);
       const actor = await this.actorService.findActorByPreferredUsername(username);
       if (!actor) {
@@ -633,7 +634,7 @@ export class AppService {
       const [flashcards, totalItems] = await this.flashcardRepository.findAndCount({
           where: {
               attributedToActivityPubId: actor.activityPubId,
-              isPublic: true, // Only include public flashcards
+              isPublic: username === activeUser?.username ? false : true, // Only include public flashcards
               deletedAt: IsNull(), // Ensure not soft-deleted
           },
           skip: (page - 1) * perPage,
@@ -641,7 +642,7 @@ export class AppService {
           order: { createdAt: 'DESC' },
       });
 
-      // The ActivityPub collection should contain the IDs of the objects
+      // The ActivityPub collection should contain the IDs of the objects; for now we are returning the entire flashcard.
       const items = flashcards.map(fc => fc.activityPubId);
 
       // Construct the collection URL for this endpoint

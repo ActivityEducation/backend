@@ -1,0 +1,1 @@
+import{Nb as r,Ob as s,ic as n,ob as a}from"./chunk-ATHMOBVU.js";var e=class t{static \u0275fac=function(o){return new(o||t)};static \u0275cmp=a({type:t,selectors:[["app-dashboard"]],decls:2,vars:0,template:function(o,m){o&1&&(r(0,"p"),n(1,"Dashboard Works!"),s())},encapsulation:2})};var l=[{path:"",component:e}];export{l as routes};

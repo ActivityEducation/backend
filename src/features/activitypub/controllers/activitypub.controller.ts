@@ -24,6 +24,8 @@ import { HttpSignatureVerificationGuard } from 'src/shared/guards/http-signature
 import { RateLimitGuard } from 'src/shared/guards/rate-limit.guard';
 import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
 import { ActivityPubActivityDto } from '../dto/activitypub-activity.dto';
+import { UserEntity } from 'src/features/auth/entities/user.entity';
+import { OptionalJwtAuthGuard } from 'src/shared/guards/optional-jwt-auth.guard';
 
 
 @ApiTags('ActivityPub')
@@ -184,7 +186,7 @@ export class ActivityPubController {
   // NEW: Created Flashcards Collection endpoint
   @Get('actors/:username/flashcards')
   @Header('Content-Type', 'application/activity+json')
-  @UseGuards(RateLimitGuard) // Apply rate limiting
+  @UseGuards(OptionalJwtAuthGuard, RateLimitGuard) // Apply rate limiting
   @ApiOperation({ summary: 'Retrieve a paginated collection of flashcards created by an actor' })
   @ApiParam({ name: 'username', description: 'The preferred username of the actor.' })
   @ApiQuery({ name: 'page', description: 'Page number', required: false, example: 1 })
@@ -193,11 +195,12 @@ export class ActivityPubController {
   @ApiResponse({ status: 404, description: 'Actor not found.' })
   async createdFlashcardsCollection(
       @Param('username') username: string,
+      @User() user: UserEntity | null,
       @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
       @Query('perPage', new DefaultValuePipe(10), ParseIntPipe) perPage: number,
   ) {
       this.logger.log(`Fetching created flashcards for '${username}'. Page: ${page}, PerPage: ${perPage}.`);
-      return this.appService.getCreatedFlashcardsCollection(username, page, perPage);
+      return this.appService.getCreatedFlashcardsCollection(username, page, perPage, user);
   }
 
   // Content object endpoint: GET /api/activities/:id
