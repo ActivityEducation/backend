@@ -90,15 +90,7 @@ export class UpdateHandler implements IActivityHandler {
               // Try to fetch remote model and store it
               const remoteModelData = await this.remoteObjectService.fetchRemoteObject(String(updatedObject['edu:model']));
               if (remoteModelData) {
-                  flashcardModelEntity = await this.flashcardModelService.createFlashcardModel({
-                      name: remoteModelData.name || 'Federated Model',
-                      summary: remoteModelData.summary,
-                      fields: remoteModelData['edu:fields'] || [],
-                      cardTemplates: remoteModelData['edu:cardTemplates'] || [],
-                  });
-                  flashcardModelEntity.activityPubId = String(updatedObject['edu:model']);
-                  await this.flashcardModelService.updateFlashcardModel(flashcardModelEntity.id, flashcardModelEntity);
-                  this.logger.log(`Federated FlashcardModel '${flashcardModelEntity.activityPubId}' fetched and stored during Flashcard Update.`);
+                  this.logger.warn(`Remote model ${remoteModelData.id} not found locally. The remote model should be fetched and stored separately.`);
               }
             }
             if (flashcardModelEntity) {
@@ -136,9 +128,7 @@ export class UpdateHandler implements IActivityHandler {
                 await this.contentObjectRepository.save(localContentObject);
                 this.logger.log(`Updated local generic ContentObject (ID: '${localContentObject.activityPubId}').`);
             } else {
-                this.logger.warn(`Local generic ContentObject '${updatedObjectId}' not found. Cannot apply update. Attempting to fetch.`);
-                // Attempt to fetch the full object as it might be a new remote object we missed
-                await this.remoteObjectService.fetchAndStoreRemoteObject(updatedObjectId);
+                this.logger.warn(`Local generic ContentObject '${updatedObjectId}' not found. Cannot apply update.`);
             }
         } catch (e) {
             this.logger.error(`Error updating local generic ContentObject '${updatedObjectId}': ${e.message}`, e.stack);

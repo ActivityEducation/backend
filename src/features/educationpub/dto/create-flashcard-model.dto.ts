@@ -7,6 +7,7 @@ import {
   IsEnum,
   IsNumber,
   ArrayNotEmpty,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -78,6 +79,11 @@ export class CreateFlashcardModelDto {
   @IsOptional()
   @ApiPropertyOptional({ description: 'A short summary or description of the flashcard model.' })
   summary?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  @ApiPropertyOptional({ description: 'Whether the flashcard model is public.', default: false })
+  isPublic?: boolean;
 
   @IsArray()
   @ArrayNotEmpty()

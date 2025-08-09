@@ -5,7 +5,10 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  ManyToOne,
+  JoinColumn,
 } from 'typeorm';
+import { ActorEntity } from '../../activitypub/entities/actor.entity';
 
 @Entity('flashcard_models')
 export class FlashcardModelEntity {
@@ -37,6 +40,16 @@ export class FlashcardModelEntity {
       height: number;
     }[];
   }[];
+
+  @Column({ type: 'text', nullable: true })
+  attributedToActivityPubId: string; // ActivityPub ID of the actor who created this model
+
+  @ManyToOne(() => ActorEntity, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'attributedToActivityPubId', referencedColumnName: 'activityPubId' })
+  creator: ActorEntity; // Relationship to the ActorEntity
+
+  @Column({ default: false })
+  isPublic: boolean; // Add a flag to control visibility
 
   @CreateDateColumn()
   createdAt: Date;

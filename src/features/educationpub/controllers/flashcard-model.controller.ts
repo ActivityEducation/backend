@@ -1,5 +1,5 @@
 // src/features/educationpub/controllers/flashcard-model.controller.ts
-import { Controller, Post, Get, Param, Body, Put, Delete, HttpCode, HttpStatus, UseGuards, UseInterceptors, ClassSerializerInterceptor, NotFoundException } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Put, Delete, HttpCode, HttpStatus, UseGuards, UseInterceptors, ClassSerializerInterceptor } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiBody, ApiParam } from '@nestjs/swagger';
 import { FlashcardModelService } from '../services/flashcard-model.service';
 import { FlashcardModelEntity } from '../entities/flashcard-model.entity';
@@ -8,8 +8,9 @@ import { CreateFlashcardModelDto } from '../dto/create-flashcard-model.dto';
 import { UpdateFlashcardModelDto } from '../dto/update-flashcard-model.dto';
 import { AbilitiesGuard } from 'src/shared/guards/abilities.guard';
 import { CheckAbilities } from 'src/shared/decorators/check-abilities.decorator';
-import { Resource } from 'src/shared/decorators/resource.decorator';
 import { JwtAuthGuard } from 'src/shared/guards/jwt-auth.guard';
+import { User } from 'src/shared/decorators/user.decorator';
+import { UserEntity } from '../../auth/entities/user.entity';
 
 @ApiTags('EducationPub - Flashcard Models')
 @Controller('edu/flashcard-models')
@@ -28,21 +29,21 @@ export class FlashcardModelController {
   @ApiResponse({ status: 409, description: 'Conflict, a model with this name already exists.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 403, description: 'Forbidden.' })
-  async create(@Body() createFlashcardModelDto: CreateFlashcardModelDto): Promise<FlashcardModelEntity> {
+  async create(@Body() createFlashcardModelDto: CreateFlashcardModelDto, @User() user: UserEntity): Promise<FlashcardModelEntity> {
     this.logger.log(`Received request to create flashcard model: ${createFlashcardModelDto.name}`);
-    return this.flashcardModelService.createFlashcardModel(createFlashcardModelDto);
+    return this.flashcardModelService.createFlashcardModel(createFlashcardModelDto, user.actor.activityPubId);
   }
 
   @Get()
   @HttpCode(HttpStatus.OK)
   @CheckAbilities(['read', FlashcardModelEntity.name])
-  @ApiOperation({ summary: 'Retrieve all flashcard models' })
+  @ApiOperation({ summary: 'Retrieve all flashcard models for the current user' })
   @ApiResponse({ status: 200, description: 'Successfully retrieved all flashcard models.', type: [FlashcardModelEntity] })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 403, description: 'Forbidden.' })
-  async findAll(): Promise<FlashcardModelEntity[]> {
+  async findAll(@User() user: UserEntity): Promise<FlashcardModelEntity[]> {
     this.logger.log('Received request to retrieve all flashcard models.');
-    return this.flashcardModelService.findAllModels();
+    return this.flashcardModelService.findAllModelsForUser(user.actor.activityPubId);
   }
 
   @Get(':id')
@@ -54,14 +55,14 @@ export class FlashcardModelController {
   @ApiResponse({ status: 404, description: 'Flashcard model not found.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 403, description: 'Forbidden.' })
-  async findOne(@Param('id') id: string): Promise<FlashcardModelEntity> {
+  async findOne(@Param('id') id: string, @User() user: UserEntity): Promise<FlashcardModelEntity> {
     this.logger.log(`Received request to retrieve flashcard model with ID: ${id}`);
-    return this.flashcardModelService.findModelById(id);
+    return this.flashcardModelService.findModelById(id, user.actor.activityPubId);
   }
 
   @Put(':id')
   @HttpCode(HttpStatus.OK)
-  @CheckAbilities(['update', FlashcardModelEntity.name, { creator: { id: '{{user.id}}' } }])
+  @CheckAbilities(['update', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Update an existing flashcard model by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the flashcard model to update.' })
   @ApiBody({ type: UpdateFlashcardModelDto })
@@ -69,22 +70,22 @@ export class FlashcardModelController {
   @ApiResponse({ status: 404, description: 'Flashcard model not found.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 403, description: 'Forbidden.' })
-  async update(@Param('id') id: string, @Resource(FlashcardModelEntity, 'params.id') flashcardModel: FlashcardModelEntity, @Body() updateFlashcardModelDto: UpdateFlashcardModelDto): Promise<FlashcardModelEntity> {
+  async update(@Param('id') id: string, @Body() updateFlashcardModelDto: UpdateFlashcardModelDto, @User() user: UserEntity): Promise<FlashcardModelEntity> {
     this.logger.log(`Received request to update flashcard model with ID: ${id}`);
-    return this.flashcardModelService.updateFlashcardModel(flashcardModel.id, updateFlashcardModelDto);
+    return this.flashcardModelService.updateFlashcardModel(id, updateFlashcardModelDto, user.actor.activityPubId);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @CheckAbilities(['delete', FlashcardModelEntity.name, { creator: { id: '{{user.id}}' } }])
+  @CheckAbilities(['delete', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Delete a flashcard model by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the flashcard model to delete.' })
   @ApiResponse({ status: 204, description: 'Flashcard model deleted successfully.' })
   @ApiResponse({ status: 404, description: 'Flashcard model not found.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 403, description: 'Forbidden.' })
-  async remove(@Param('id') id: string, @Resource(FlashcardModelEntity, 'params.id') flashcardModel: FlashcardModelEntity): Promise<void> {
+  async remove(@Param('id') id: string, @User() user: UserEntity): Promise<void> {
     this.logger.log(`Received request to delete flashcard model with ID: ${id}`);
-    await this.flashcardModelService.deleteFlashcardModel(flashcardModel.id);
+    await this.flashcardModelService.deleteFlashcardModel(id, user.actor.activityPubId);
   }
 }

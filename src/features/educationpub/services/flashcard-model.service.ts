@@ -1,6 +1,6 @@
 // src/features/educationpub/services/flashcard-model.service.ts
 
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { FlashcardModelEntity } from '../entities/flashcard-model.entity';
@@ -29,11 +29,11 @@ export class FlashcardModelService {
     this.instanceBaseUrl = baseUrl;
   }
 
-  async createFlashcardModel(dto: CreateFlashcardModelDto): Promise<FlashcardModelEntity> {
+  async createFlashcardModel(dto: CreateFlashcardModelDto, actorId: string): Promise<FlashcardModelEntity> {
     this.logger.log(`Attempting to create flashcard model: ${dto.name}`);
-    const existingModel = await this.flashcardModelRepository.findOne({ where: { name: dto.name } });
+    const existingModel = await this.flashcardModelRepository.findOne({ where: { name: dto.name, attributedToActivityPubId: actorId } });
     if (existingModel) {
-      throw new ConflictException(`Flashcard model with name '${dto.name}' already exists.`);
+      throw new ConflictException(`Flashcard model with name '${dto.name}' already exists for this user.`);
     }
 
     const activityPubId = `${this.instanceBaseUrl}/objects/${randomUUID()}`;
@@ -41,6 +41,7 @@ export class FlashcardModelService {
     const newModel = this.flashcardModelRepository.create({
       ...dto,
       activityPubId: activityPubId,
+      attributedToActivityPubId: actorId,
     });
     const savedModel = await this.flashcardModelRepository.save(newModel);
     this.logger.log(`Flashcard model created: ${savedModel.name} (${savedModel.id})`);
@@ -48,16 +49,26 @@ export class FlashcardModelService {
   }
 
   async findAllModels(): Promise<FlashcardModelEntity[]> {
-    this.logger.debug('Fetching all flashcard models.');
-    return this.flashcardModelRepository.find();
+    this.logger.debug('Fetching all public flashcard models.');
+    return this.flashcardModelRepository.find({ where: { isPublic: true } });
   }
 
-  async findModelById(id: string): Promise<FlashcardModelEntity> {
+  async findAllModelsForUser(actorId: string): Promise<FlashcardModelEntity[]> {
+    this.logger.debug(`Fetching all flashcard models for user: ${actorId}`);
+    return this.flashcardModelRepository.find({ where: [{ isPublic: true }, { attributedToActivityPubId: actorId }] });
+  }
+
+  async findModelById(id: string, actorId?: string): Promise<FlashcardModelEntity> {
     this.logger.debug(`Fetching flashcard model by ID: ${id}`);
     const model = await this.flashcardModelRepository.findOne({ where: { id } });
     if (!model) {
       throw new NotFoundException(`Flashcard model with ID '${id}' not found.`);
     }
+
+    if (!model.isPublic && model.attributedToActivityPubId !== actorId) {
+      throw new ForbiddenException('You do not have permission to access this model.');
+    }
+
     return model;
   }
 
@@ -70,17 +81,28 @@ export class FlashcardModelService {
     return model;
   }
 
-  async updateFlashcardModel(id: string, dto: UpdateFlashcardModelDto): Promise<FlashcardModelEntity> {
+  async updateFlashcardModel(id: string, dto: UpdateFlashcardModelDto, actorId: string): Promise<FlashcardModelEntity> {
     this.logger.log(`Attempting to update flashcard model with ID: ${id}`);
-    const model = await this.findModelById(id); // Reuses findModelById for existence check
+    const model = await this.findModelById(id, actorId);
+
+    if (model.attributedToActivityPubId !== actorId) {
+      throw new ForbiddenException('You do not have permission to update this model.');
+    }
+
     Object.assign(model, dto);
     const updatedModel = await this.flashcardModelRepository.save(model);
     this.logger.log(`Flashcard model updated: ${updatedModel.name} (${updatedModel.id})`);
     return updatedModel;
   }
 
-  async deleteFlashcardModel(id: string): Promise<void> {
+  async deleteFlashcardModel(id: string, actorId: string): Promise<void> {
     this.logger.log(`Attempting to delete flashcard model with ID: ${id}`);
+    const model = await this.findModelById(id, actorId);
+
+    if (model.attributedToActivityPubId !== actorId) {
+      throw new ForbiddenException('You do not have permission to delete this model.');
+    }
+
     const result = await this.flashcardModelRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Flashcard model with ID '${id}' not found.`);

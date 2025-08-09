@@ -44,6 +44,7 @@ export class FlashcardService {
     @InjectRepository(ContentObjectEntity) // Needed if liked/announced objects are generic content objects
     private readonly contentObjectRepository: Repository<ContentObjectEntity>,
     @InjectQueue('outbox') private outboxQueue: Queue,
+    @InjectQueue('inference') private inferenceQueue: Queue,
     private readonly logger: LoggerService,
     private readonly appService: AppService,
     private readonly inferenceService: InferenceService,
@@ -192,6 +193,8 @@ export class FlashcardService {
     if (savedFlashcard.isPublic) {
       await this.dispatchCreateActivity(savedFlashcard, creatorActor);
     }
+
+    await this.inferenceQueue.add('inference', { flashcardId: savedFlashcard.id });
 
     return savedFlashcard;
   }

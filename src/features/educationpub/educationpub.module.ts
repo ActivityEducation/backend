@@ -15,6 +15,7 @@ import { SpacedRepetitionService } from './services/spaced-repetition.service';
 import { FSRSLogic } from './services/fsrs.logic';
 import { SpacedRepetitionController } from './controllers/spaced-repetition.controller';
 import { KnowledgeGraphModule } from '../knowledge-graph/knowledge-graph.module';
+import { BullModule } from '@nestjs/bullmq';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { KnowledgeGraphModule } from '../knowledge-graph/knowledge-graph.module'
     ]),
     forwardRef(() => AuthModule), // Import AuthModule to make AbilityFactory and other auth-related providers available
     CommonModule, // Import CommonModule to make LoggerService available
+    BullModule.registerQueue({ name: 'inference' }),
   ],
   providers: [FlashcardModelService, FlashcardService, SpacedRepetitionService, FSRSLogic],
   controllers: [EducationPubController, FlashcardModelController, SpacedRepetitionController],
