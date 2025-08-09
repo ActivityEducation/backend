@@ -4,6 +4,7 @@
 /build
 
 .cache
+.gemini
 
 src.zip
 

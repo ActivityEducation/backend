@@ -1,0 +1,1 @@
+import"./chunk-2NFLSA4Y.js";var e=[{path:"template-model",loadComponent:()=>import("./chunk-M7OUHDQB.js").then(t=>t.TemplateModelEditorComponent)},{path:"",redirectTo:"template-model",pathMatch:"full"}];export{e as routes};
