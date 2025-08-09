@@ -40,9 +40,16 @@ export class OutboxProcessor extends WorkerHost {
     super();
     const baseUrl = this.configService.get<string>('INSTANCE_BASE_URL');
     if (!baseUrl) {
-      throw new Error('INSTANCE_BASE_URL is not defined in environment variables.');
+      throw new Error(
+        'INSTANCE_BASE_URL is not defined in environment variables.',
+      );
     }
     this.instanceBaseUrl = baseUrl;
+  }
+
+  async onModuleDestroy() {
+    this.logger.warn('Gracefully shutting down BullMQ Outbox processor...');
+    await this.worker.close();
   }
 
   /**
@@ -60,15 +67,23 @@ export class OutboxProcessor extends WorkerHost {
       `Processing outbox job ${job.id} for activity: ${activityId}, Type: ${activityType} from local actor ID: ${actorId}`,
     );
 
-    const senderActor = await this.actorRepository.findOne({ where: { id: actorId } });
+    const senderActor = await this.actorRepository.findOne({
+      where: { id: actorId },
+    });
     if (!senderActor) {
-      this.logger.error(`Sender actor with ID '${actorId}' not found for outbox job '${job.id}'.`);
+      this.logger.error(
+        `Sender actor with ID '${actorId}' not found for outbox job '${job.id}'.`,
+      );
       throw new Error('Sender actor not found.');
     }
 
-    const privateKeyPem = await this.keyManagementService.getPrivateKey(senderActor.id);
+    const privateKeyPem = await this.keyManagementService.getPrivateKey(
+      senderActor.id,
+    );
     if (!privateKeyPem) {
-      this.logger.error(`Private key not found for actor '${senderActor.activityPubId}'. Cannot sign activity.`);
+      this.logger.error(
+        `Private key not found for actor '${senderActor.activityPubId}'. Cannot sign activity.`,
+      );
       throw new Error('Private key not found.');
     }
 
@@ -81,91 +96,138 @@ export class OutboxProcessor extends WorkerHost {
       ...(Array.isArray(activity.cc) ? activity.cc : [activity.cc]),
       ...(Array.isArray(activity.bto) ? activity.bto : [activity.bto]),
       ...(Array.isArray(activity.bcc) ? activity.bcc : [activity.bcc]),
-      ...(Array.isArray(activity.audience) ? activity.audience : [activity.audience]),
+      ...(Array.isArray(activity.audience)
+        ? activity.audience
+        : [activity.audience]),
     ].filter(Boolean); // Remove null/undefined entries
 
     // Filter out 'Public' collection URI from direct recipients if not explicitly sending to it
     const publicUri = 'https://www.w3.org/ns/activitystreams#Public';
     const isPublic = directRecipients.includes(publicUri);
-    const filteredDirectRecipients = directRecipients.filter(uri => uri !== publicUri);
+    const filteredDirectRecipients = directRecipients.filter(
+      (uri) => uri !== publicUri,
+    );
 
     // If activity is public, send to followers' inboxes
     if (isPublic) {
       if (senderActor.followersUrl) {
-        const followersCollection = await this.remoteObjectService.getActorFollowers(senderActor.followersUrl);
-        if (followersCollection && Array.isArray(followersCollection.orderedItems)) {
-          followersCollection.orderedItems.forEach(followerUri => {
+        const followersCollection =
+          await this.remoteObjectService.getActorFollowers(
+            senderActor.followersUrl,
+          );
+        if (
+          followersCollection &&
+          Array.isArray(followersCollection.orderedItems)
+        ) {
+          followersCollection.orderedItems.forEach((followerUri) => {
             if (!recipients.includes(followerUri)) {
               recipients.push(followerUri);
             }
           });
-          this.logger.debug(`Activity is public. Added ${followersCollection.orderedItems.length} followers as recipients.`);
+          this.logger.debug(
+            `Activity is public. Added ${followersCollection.orderedItems.length} followers as recipients.`,
+          );
         } else {
-          this.logger.warn(`Public activity but no followers found or followers collection malformed for actor ${senderActor.activityPubId}.`);
+          this.logger.warn(
+            `Public activity but no followers found or followers collection malformed for actor ${senderActor.activityPubId}.`,
+          );
         }
       } else {
-        this.logger.warn(`Public activity but senderActor.followersUrl is undefined for actor ${senderActor.activityPubId}. Cannot fetch followers.`);
+        this.logger.warn(
+          `Public activity but senderActor.followersUrl is undefined for actor ${senderActor.activityPubId}. Cannot fetch followers.`,
+        );
       }
     }
 
     // Add direct recipients (excluding 'Public')
-    filteredDirectRecipients.forEach(recipient => {
-        if (!recipients.includes(recipient)) {
-            recipients.push(recipient);
-        }
+    filteredDirectRecipients.forEach((recipient) => {
+      if (!recipients.includes(recipient)) {
+        recipients.push(recipient);
+      }
     });
 
     // If the object of the activity has an 'attributedTo' (e.g., a reply),
     // ensure the attributedTo actor's inbox is also a recipient.
-    if (activity.object && typeof activity.object === 'object' && activity.object.attributedTo) {
+    if (
+      activity.object &&
+      typeof activity.object === 'object' &&
+      activity.object.attributedTo
+    ) {
       const attributedToActorUri = activity.object.attributedTo;
-      if (typeof attributedToActorUri === 'string' && attributedToActorUri !== senderActor.activityPubId) {
+      if (
+        typeof attributedToActorUri === 'string' &&
+        attributedToActorUri !== senderActor.activityPubId
+      ) {
         recipients.push(attributedToActorUri);
       }
     } else if (typeof activity.object === 'string') {
       // If object is just a URI, try to resolve its attributedTo
-      const remoteObject = await this.remoteObjectService.fetchRemoteObject(activity.object).catch(e => {
-        this.logger.warn(`Failed to fetch remote object ${activity.object} to find attributedTo for dispatch: ${e.message}`);
-        return null;
-      });
-      if (remoteObject && remoteObject.attributedTo && typeof remoteObject.attributedTo === 'string' && remoteObject.attributedTo !== senderActor.activityPubId) {
+      const remoteObject = await this.remoteObjectService
+        .fetchRemoteObject(activity.object)
+        .catch((e) => {
+          this.logger.warn(
+            `Failed to fetch remote object ${activity.object} to find attributedTo for dispatch: ${e.message}`,
+          );
+          return null;
+        });
+      if (
+        remoteObject &&
+        remoteObject.attributedTo &&
+        typeof remoteObject.attributedTo === 'string' &&
+        remoteObject.attributedTo !== senderActor.activityPubId
+      ) {
         recipients.push(remoteObject.attributedTo);
       }
     }
 
-
     if (recipients.length === 0) {
-      this.logger.warn(`No recipients found for activity '${activityId}'. Skipping dispatch.`);
+      this.logger.warn(
+        `No recipients found for activity '${activityId}'. Skipping dispatch.`,
+      );
       return { status: 'skipped', reason: 'no recipients' };
     }
 
     // Canonicalize the JSON-LD payload
     let canonicalizedActivity: string;
     try {
-      canonicalizedActivity = await jsonld.canonize(activity, { algorithm: 'URDNA2015', format: 'application/n-quads' });
-      this.logger.debug(`Canonicalized activity (N-Quads): ${canonicalizedActivity}`);
+      canonicalizedActivity = await jsonld.canonize(activity, {
+        algorithm: 'URDNA2015',
+        format: 'application/n-quads',
+      });
+      this.logger.debug(
+        `Canonicalized activity (N-Quads): ${canonicalizedActivity}`,
+      );
     } catch (e) {
-      this.logger.error(`Failed to canonicalize activity '${activityId}': ${e.message}`, e.stack);
+      this.logger.error(
+        `Failed to canonicalize activity '${activityId}': ${e.message}`,
+        e.stack,
+      );
       throw new Error(`Failed to canonicalize activity: ${e.message}`);
     }
-
 
     const inboxUrlsToDeliver: Set<string> = new Set();
     for (const recipientUri of recipients) {
       try {
-        const actorProfile = await this.remoteObjectService.fetchRemoteObject(recipientUri);
+        const actorProfile =
+          await this.remoteObjectService.fetchRemoteObject(recipientUri);
         if (actorProfile && actorProfile.inbox) {
           inboxUrlsToDeliver.add(actorProfile.inbox);
         } else {
-          this.logger.warn(`Could not resolve inbox for recipient: ${recipientUri}. Actor profile or inbox URL missing.`);
+          this.logger.warn(
+            `Could not resolve inbox for recipient: ${recipientUri}. Actor profile or inbox URL missing.`,
+          );
         }
       } catch (error) {
-        this.logger.warn(`Error resolving inbox for ${recipientUri}: ${error.message}`);
+        this.logger.warn(
+          `Error resolving inbox for ${recipientUri}: ${error.message}`,
+        );
       }
     }
 
     if (inboxUrlsToDeliver.size === 0) {
-      this.logger.warn(`No resolvable inboxes for activity '${activityId}'. Skipping dispatch.`);
+      this.logger.warn(
+        `No resolvable inboxes for activity '${activityId}'. Skipping dispatch.`,
+      );
       return { status: 'skipped', reason: 'no resolvable inboxes' };
     }
 
@@ -174,7 +236,9 @@ export class OutboxProcessor extends WorkerHost {
 
     for (const inboxUrl of Array.from(inboxUrlsToDeliver)) {
       try {
-        this.logger.log(`Attempting to deliver activity '${activityId}' to inbox: ${inboxUrl}`);
+        this.logger.log(
+          `Attempting to deliver activity '${activityId}' to inbox: ${inboxUrl}`,
+        );
 
         const date = new Date().toUTCString();
         const activityString = JSON.stringify(activity);
@@ -183,10 +247,10 @@ export class OutboxProcessor extends WorkerHost {
         // Headers to be included in the request and signed
         // FIX: Ensure header keys are lowercase for consistency with createSigningString's lookup
         const requestHeaders: Record<string, string> = {
-          'host': new URL(inboxUrl).host,
-          'date': date,
+          host: new URL(inboxUrl).host,
+          date: date,
           'content-type': 'application/activity+json',
-          'digest': digest,
+          digest: digest,
         };
 
         // Headers that will form the signing string
@@ -212,19 +276,24 @@ export class OutboxProcessor extends WorkerHost {
 
         // Add the Signature header to the request headers (can be PascalCase for actual HTTP request)
         requestHeaders['Signature'] = signatureHeaderValue;
-        requestHeaders['User-Agent'] = `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`;
+        requestHeaders['User-Agent'] =
+          `${this.configService.get<string>('APP_NAME') || 'EduPub'}/${process.env.npm_package_version || '1.0.0'} (+${this.instanceBaseUrl})`;
 
-        this.logger.debug(`Dispatching signed activity to ${inboxUrl} with headers: ${JSON.stringify(requestHeaders)}`);
+        this.logger.debug(
+          `Dispatching signed activity to ${inboxUrl} with headers: ${JSON.stringify(requestHeaders)}`,
+        );
 
         const response = await this.remoteObjectService.postSignedActivity(
           senderActor.id, // Internal actor ID
           inboxUrl, // Target inbox URL
           activity, // Activity payload
-          requestHeaders // Complete headers including signature
+          requestHeaders, // Complete headers including signature
         );
 
         if (response && response.status >= 200 && response.status < 300) {
-          this.logger.log(`Successfully delivered activity '${activityId}' to ${inboxUrl}. Status: ${response.status}`);
+          this.logger.log(
+            `Successfully delivered activity '${activityId}' to ${inboxUrl}. Status: ${response.status}`,
+          );
           successCount++;
         } else {
           this.logger.error(
@@ -248,7 +317,9 @@ export class OutboxProcessor extends WorkerHost {
       throw new Error(`Failed to deliver activity to ${failureCount} inboxes.`);
     }
 
-    this.logger.log(`Outbox job ${job.id} for activity '${activityId}' completed successfully.`);
+    this.logger.log(
+      `Outbox job ${job.id} for activity '${activityId}' completed successfully.`,
+    );
     return { status: 'completed', deliveredTo: successCount };
   }
 
@@ -262,6 +333,8 @@ export class OutboxProcessor extends WorkerHost {
 
   @OnWorkerEvent('completed')
   onCompleted(job: Job<any>) {
-    this.logger.log(`Outbox job ${job.id} for activity '${job.data.activity.id}' completed.`);
+    this.logger.log(
+      `Outbox job ${job.id} for activity '${job.data.activity.id}' completed.`,
+    );
   }
 }

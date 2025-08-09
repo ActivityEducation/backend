@@ -15,6 +15,15 @@ import { InferenceProcessor } from './processors/inference.processor';
     // Register a new queue named 'inference'
     BullModule.registerQueue({
       name: 'inference',
+      defaultJobOptions: {
+        // A job will be retried up to 5 times.
+        attempts: 5,
+        // Use an exponential backoff strategy for retries to avoid overwhelming the system.
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      },
     }),
   ],
   providers: [

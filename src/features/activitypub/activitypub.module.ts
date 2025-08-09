@@ -45,6 +45,13 @@ import { OutboxProcessor } from './services/outbox.processor';
     }),
     BullModule.registerQueue({
       name: 'outbox',
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      },
     }),
     forwardRef(() => CoreModule),
     CommonModule,

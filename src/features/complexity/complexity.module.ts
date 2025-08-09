@@ -15,14 +15,21 @@ import { CommonModule } from 'src/shared/common.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([ActorEntity, ReviewLogEntity, Node, Edge]),
-    BullModule.registerQueue({ name: 'complexity' }),
+    BullModule.registerQueue({
+      name: 'complexity',
+      defaultJobOptions: {
+        // A job will be retried up to 5 times.
+        attempts: 5,
+        // Use an exponential backoff strategy for retries to avoid overwhelming the system.
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      },
+    }),
     ScheduleModule.forRoot(),
     CommonModule,
   ],
-  providers: [
-    ComplexityService,
-    ComplexityProcessor,
-    ComplexityScheduler,
-  ],
+  providers: [ComplexityService, ComplexityProcessor, ComplexityScheduler],
 })
 export class ComplexityModule {}

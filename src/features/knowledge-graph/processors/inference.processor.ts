@@ -16,37 +16,49 @@ import { PipelineFactory } from '../services/pipeline.factory';
 
 // Helper function and topics array remain the same
 function generateFlashcardTextStream(flashcard: FlashcardEntity): string {
-    const eduModel = flashcard.eduModel;
-    const fieldsData = flashcard.eduFieldsData as Record<string, any>;
-    const outputParts: string[] = [];
+  const eduModel = flashcard.eduModel;
+  const fieldsData = flashcard.eduFieldsData as Record<string, any>;
+  const outputParts: string[] = [];
 
-    if (!eduModel || !Array.isArray(eduModel.fields) || !fieldsData) {
-        return '';
+  if (!eduModel || !Array.isArray(eduModel.fields) || !fieldsData) {
+    return '';
+  }
+
+  for (const field of eduModel.fields) {
+    const isTextField = field.type === 'text';
+    // FIX: Use the field's 'id' to look up the corresponding value in fieldsData,
+    // as the 'id' is the key in the data object.
+    const value = fieldsData[field.id];
+
+    if (isTextField && typeof value === 'string' && value.trim() !== '') {
+      outputParts.push(value.trim());
     }
-
-    for (const field of eduModel.fields) {
-        const isTextField = field.type === 'text';
-        // FIX: Use the field's 'id' to look up the corresponding value in fieldsData,
-        // as the 'id' is the key in the data object.
-        const value = fieldsData[field.id];
-
-        if (isTextField && typeof value === 'string' && value.trim() !== '') {
-            outputParts.push(value.trim());
-        }
-    }
-    return outputParts.join('; ');
+  }
+  return outputParts.join('; ');
 }
 
-const topics = [ "Arts & Humanities", "Society & Social Sciences", "Business & Finance", "Science & Mathematics", "Technology & Engineering", "Medicine & Health", "Geography & Places", "People & Self", "Philosophy & Religion", "Culture & Entertainment", "Language & Linguistics", "General Reference & Knowledge"];
+const topics = [
+  'Arts & Humanities',
+  'Society & Social Sciences',
+  'Business & Finance',
+  'Science & Mathematics',
+  'Technology & Engineering',
+  'Medicine & Health',
+  'Geography & Places',
+  'People & Self',
+  'Philosophy & Religion',
+  'Culture & Entertainment',
+  'Language & Linguistics',
+  'General Reference & Knowledge',
+];
 interface InferenceJobData {
   flashcardId: string;
 }
 
-
 @Processor('inference', { concurrency: 1 })
 export class InferenceProcessor extends WorkerHost implements OnModuleInit {
   private readonly logger = new Logger(InferenceProcessor.name);
-  
+
   // Properties to hold the initialized pipelines
   private classifier: ZeroShotClassificationPipeline;
   private ner: TokenClassificationPipeline;
@@ -59,6 +71,11 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
     super();
   }
 
+  async onModuleDestroy() {
+    this.logger.warn('Gracefully shutting down BullMQ Inference processor...');
+    await this.worker.close();
+  }
+
   /**
    * This NestJS lifecycle hook is called once the module has been initialized.
    * We use it to pre-load the AI models so the processor is "warm" and
@@ -69,8 +86,12 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
     try {
       // Load all necessary models in parallel
       [this.classifier, this.ner] = await Promise.all([
-        PipelineFactory.getInstance('zero-shot-classification') as unknown as ZeroShotClassificationPipeline,
-        PipelineFactory.getInstance('token-classification') as unknown as TokenClassificationPipeline,
+        PipelineFactory.getInstance(
+          'zero-shot-classification',
+        ) as unknown as ZeroShotClassificationPipeline,
+        PipelineFactory.getInstance(
+          'token-classification',
+        ) as unknown as TokenClassificationPipeline,
       ]);
       this.logger.log('Pipelines are ready to process jobs.');
     } catch (error) {
@@ -79,12 +100,14 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
   }
 
   async process(job: Job<InferenceJobData>): Promise<void> {
-    this.logger.log(`Processing inference job ${job.id} for flashcard ID: ${job.data.flashcardId}`);
+    this.logger.log(
+      `Processing inference job ${job.id} for flashcard ID: ${job.data.flashcardId}`,
+    );
 
     // Check if pipelines are initialized
     if (!this.classifier || !this.ner) {
-        this.logger.error('Pipelines are not initialized. Skipping job.');
-        throw new Error('Pipelines not ready');
+      this.logger.error('Pipelines are not initialized. Skipping job.');
+      throw new Error('Pipelines not ready');
     }
 
     const flashcard = await this.flashcardRepository.findOne({
@@ -93,13 +116,17 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
     });
 
     if (!flashcard) {
-      this.logger.error(`Flashcard with ID ${job.data.flashcardId} not found. Skipping job.`);
+      this.logger.error(
+        `Flashcard with ID ${job.data.flashcardId} not found. Skipping job.`,
+      );
       return;
     }
 
     const text = generateFlashcardTextStream(flashcard);
     if (!text) {
-      this.logger.log(`Flashcard ${flashcard.id} has no text content. Skipping.`);
+      this.logger.log(
+        `Flashcard ${flashcard.id} has no text content. Skipping.`,
+      );
       return;
     }
 
@@ -111,7 +138,8 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
       ]);
 
       const inferenceResultForGraph: InferenceResult = {
-        sequence: (classificationResult as ZeroShotClassificationOutput).sequence,
+        sequence: (classificationResult as ZeroShotClassificationOutput)
+          .sequence,
         labels: (classificationResult as ZeroShotClassificationOutput).labels,
         scores: (classificationResult as ZeroShotClassificationOutput).scores,
       };
@@ -120,8 +148,11 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
         inferenceResultForGraph,
         flashcard.activityPubId,
       );
-      
-      const sequenceNode = await this.knowledgeGraphService.findNodeByProperties('Sequence', { text });
+
+      const sequenceNode =
+        await this.knowledgeGraphService.findNodeByProperties('Sequence', {
+          text,
+        });
       if (sequenceNode) {
         await this.knowledgeGraphService.addNerResultsToGraph(
           text,
@@ -130,9 +161,14 @@ export class InferenceProcessor extends WorkerHost implements OnModuleInit {
         );
       }
 
-      this.logger.log(`Successfully completed inference job for flashcard ID: ${flashcard.id}`);
+      this.logger.log(
+        `Successfully completed inference job for flashcard ID: ${flashcard.id}`,
+      );
     } catch (error) {
-      this.logger.error(`Inference job for flashcard ${flashcard.id} failed`, error.stack);
+      this.logger.error(
+        `Inference job for flashcard ${flashcard.id} failed`,
+        error.stack,
+      );
       throw error;
     }
   }

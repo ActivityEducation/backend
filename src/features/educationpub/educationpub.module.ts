@@ -24,7 +24,7 @@ import { KnowledgeGraphModule } from '../knowledge-graph/knowledge-graph.module'
         FlashcardEntity, 
         ActorEntity,
         ReviewLogEntity,
-        SpacedRepetitionScheduleEntity
+        SpacedRepetitionScheduleEntity,
     ]),
     forwardRef(() => AuthModule), // Import AuthModule to make AbilityFactory and other auth-related providers available
     CommonModule, // Import CommonModule to make LoggerService available
