@@ -51,7 +51,7 @@ export class RobotsController {
 
   @Get('robots/rules')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
-  @CheckAbilities(['read', RobotRuleEntity.name]) // Read access might be broader than admin
+  @CheckAbilities(['read', 'RobotRuleEntity']) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Retrieve all robots.txt rules' })
   @ApiResponse({ status: 200, description: 'Successfully retrieved all robot rules.', type: [RobotRuleEntity] })
@@ -64,7 +64,7 @@ export class RobotsController {
 
   @Get('robots/rules/:id')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
-  @CheckAbilities(['read', RobotRuleEntity.name]) // Read access might be broader than admin
+  @CheckAbilities(['read', 'RobotRuleEntity']) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Retrieve a robots.txt rule by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the robot rule.' })
@@ -133,7 +133,7 @@ export class RobotsController {
 
   @Get('robots/sitemaps')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
-  @CheckAbilities(['read', SitemapEntity.name]) // Read access might be broader than admin
+  @CheckAbilities(['read', 'SitemapEntity']) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Retrieve all sitemap entries for robots.txt' })
   @ApiResponse({ status: 200, description: 'Successfully retrieved all sitemap entries.', type: [SitemapEntity] })
@@ -146,7 +146,7 @@ export class RobotsController {
 
   @Get('robots/sitemaps/:id')
   @UseGuards(JwtAuthGuard, AbilitiesGuard)
-  @CheckAbilities(['read', SitemapEntity.name]) // Read access might be broader than admin
+  @CheckAbilities(['read', 'SitemapEntity']) // Read access might be broader than admin
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Retrieve a sitemap entry by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the sitemap entry.' })
