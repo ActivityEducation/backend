@@ -8,6 +8,7 @@ services:
     volumes:
       - ./.env:/app/.env # Keep mounting the .env file
       - ./logs:/app/logs
+      - ./config:/app/config
     # The app will listen on its internal port 80. Nginx will connect to it
     # internally via the Docker network using 'http://app:80'.
     # If you need to access your app directly for debugging, you can use:
@@ -16,6 +17,7 @@ services:
     restart: always
     environment:
       NODE_ENV: production
+      LOG_LEVEL: debug
       # Add any other environment variables your NestJS app needs
     depends_on:
       - db
