@@ -48,7 +48,7 @@ export function provideLoggerOptions() {
         debug: 5,
         access: 6,
       },
-      level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+      level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
       format: format.combine(
         format.timestamp({ format: 'MM/DD/YYYY, h:mm:ss A' }),
         format.printf(JSON.stringify),

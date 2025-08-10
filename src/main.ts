@@ -10,7 +10,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true, // Essential for HTTP Signature verification (signature is calculated over raw body)
     bodyParser: false, // Disable NestJS's default body parser to allow custom raw body parsing
-    logger: new Logger(),
+    logger: ['error', 'warn', 'log', 'debug', 'verbose'],
   });
 
   // Order of body-parsers is crucial for rawBody access:
@@ -25,6 +25,9 @@ async function bootstrap() {
   app.use(bodyParser.urlencoded({ extended: true })); // For form data
 
   const loggerService = await app.resolve(LoggerService);
+
+  // Use the custom LoggerService
+  app.useLogger(loggerService);
   loggerService.setContext('Bootstrap');
 
 

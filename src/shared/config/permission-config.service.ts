@@ -49,7 +49,7 @@ export class PermissionConfigService implements OnModuleInit {
           continue;
         }
         this.rolesPermissionsMap.set( yamlRole.name, yamlRole.permissions.map(p => ({ ...p, type: p.type || 'allow' })) );
-        this.logger.debug(`Loaded role '${yamlRole.name}' with ${yamlRole.permissions.length} permissions.`);
+        this.logger.log(`Loaded role '${yamlRole.name}' with ${yamlRole.permissions.length} permissions.`);
       }
       this.logger.log(`Successfully loaded ${this.rolesPermissionsMap.size} roles from YAML.`);
     } catch (error) {
