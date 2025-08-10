@@ -22,7 +22,7 @@ export class FlashcardModelController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @CheckAbilities(['create', 'FlashcardModelEntity'])
+  @CheckAbilities(['create', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Create a new flashcard model' })
   @ApiBody({ type: CreateFlashcardModelDto })
   @ApiResponse({ status: 201, description: 'Flashcard model created successfully.', type: FlashcardModelEntity })
@@ -36,7 +36,7 @@ export class FlashcardModelController {
 
   @Get()
   @HttpCode(HttpStatus.OK)
-  @CheckAbilities(['read', 'FlashcardModelEntity'])
+  @CheckAbilities(['read', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Retrieve all flashcard models for the current user' })
   @ApiResponse({ status: 200, description: 'Successfully retrieved all flashcard models.', type: [FlashcardModelEntity] })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
@@ -48,7 +48,7 @@ export class FlashcardModelController {
 
   @Get(':id')
   @HttpCode(HttpStatus.OK)
-  @CheckAbilities(['read', 'FlashcardModelEntity'])
+  @CheckAbilities(['read', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Retrieve a flashcard model by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the flashcard model.' })
   @ApiResponse({ status: 200, description: 'Successfully retrieved the flashcard model.', type: FlashcardModelEntity })
@@ -62,7 +62,7 @@ export class FlashcardModelController {
 
   @Put(':id')
   @HttpCode(HttpStatus.OK)
-  @CheckAbilities(['update', 'FlashcardModelEntity'])
+  @CheckAbilities(['update', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Update an existing flashcard model by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the flashcard model to update.' })
   @ApiBody({ type: UpdateFlashcardModelDto })
@@ -77,7 +77,7 @@ export class FlashcardModelController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @CheckAbilities(['delete', 'FlashcardModelEntity'])
+  @CheckAbilities(['delete', FlashcardModelEntity.name])
   @ApiOperation({ summary: 'Delete a flashcard model by ID' })
   @ApiParam({ name: 'id', description: 'The UUID of the flashcard model to delete.' })
   @ApiResponse({ status: 204, description: 'Flashcard model deleted successfully.' })

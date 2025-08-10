@@ -15,7 +15,7 @@ import { ModuleRef } from '@nestjs/core'; // Import ModuleRef
  * Usage:
  * @Put(':id')
  * @UseGuards(JwtAuthGuard, AbilitiesGuard)
- * @CheckAbilities({ action: 'update', subject: 'FlashcardEntity', conditions: { creator: { id: '{{user.id}}' } } })
+ * @CheckAbilities({ action: 'update', subject: FlashcardEntity.name, conditions: { creator: { id: '{{user.id}}' } } })
  * async updateFlashcard(
  * @Param('id') id: string,
  * @Resource(FlashcardEntity, 'params.id') flashcard: FlashcardEntity, // Fetches Flashcard by ID from param 'id'
