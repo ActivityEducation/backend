@@ -198,4 +198,17 @@ export class SpacedRepetitionService {
         model: s.flashcard.eduModel // The 'model' property holds the related FlashcardModelEntity
     }));
   }
+
+  async getReviewSchedule(actorId: string): Promise<SpacedRepetitionScheduleEntity[]> {
+    this.logger.log(`Fetching review schedule for actor: ${actorId}`);
+    return this.scheduleRepository.find({
+      where: {
+        actor: { id: actorId },
+      },
+      order: {
+        due: 'ASC',
+      },
+      relations: ['flashcard', 'flashcard.eduModel'],
+    });
+  }
 }

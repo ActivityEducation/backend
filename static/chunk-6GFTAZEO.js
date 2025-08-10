@@ -1,1 +1,0 @@
-import{A as r,B as d,z as a}from"./chunk-QOA5MJ5H.js";var s=r({source:"Flashcards",events:{"Load Flashcards":a(),"Load Flashcard":a(),"Add To Review":a(),"Load Flashcard Success":a(),"Create Flashcard":a(),"Load Flashcard Failure":a(),"Load Model":a(),"Load Models":d(),"Create Model":a(),"Load Model Success":a(),"Load Model Failure":a()}});export{s as a};

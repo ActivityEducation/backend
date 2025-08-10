@@ -15,6 +15,7 @@ import { UserEntity } from '../../auth/entities/user.entity'; // Import UserEnti
 import { Exclude } from 'class-transformer'; // NEW: Import Exclude
 import { ReviewLogEntity } from 'src/features/educationpub/entities/review-log.entity';
 import { SpacedRepetitionScheduleEntity } from 'src/features/educationpub/entities/spaced-repetition-schedule.entity';
+import { ApiResponseProperty } from '@nestjs/swagger';
 
 /**
  * Represents an ActivityPub Actor (e.g., as:Person, as:Application).
@@ -23,20 +24,25 @@ import { SpacedRepetitionScheduleEntity } from 'src/features/educationpub/entiti
 @Entity('actors')
 export class ActorEntity {
   @PrimaryGeneratedColumn('uuid')
+  @ApiResponseProperty()
   id: string; // Internal UUID for the database record
 
   @Column({ unique: true })
   @Index({ unique: true })
+  @ApiResponseProperty()
   activityPubId: string; // The canonical ActivityPub URI of the actor (e.g., https://example.com/users/alice)
 
   @Column({ unique: true })
   @Index({ unique: true })
+  @ApiResponseProperty()
   preferredUsername: string; // The user's chosen username (e.g., 'alice')
 
   @Column({ nullable: true })
+  @ApiResponseProperty()
   name?: string; // Display name of the actor
 
   @Column({ type: 'text', nullable: true })
+  @ApiResponseProperty()
   summary?: string; // Bio or description of the actor
 
   @Column()

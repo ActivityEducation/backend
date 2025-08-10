@@ -37,6 +37,15 @@ export class SpacedRepetitionController {
     return this.srsService.getDueFlashcards(actorId);
   }
 
+  @Get('schedule')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Get the user's upcoming review schedule" })
+  @ApiResponse({ status: 200, description: 'Successfully retrieved the review schedule.', type: [SpacedRepetitionScheduleEntity] })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async getReviewSchedule(@User('actor.id') actorId: string): Promise<SpacedRepetitionScheduleEntity[]> {
+    return this.srsService.getReviewSchedule(actorId);
+  }
+
   @Post('add')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Add a new flashcard to the user\'s study queue' })
